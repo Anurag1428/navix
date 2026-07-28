@@ -1,14 +1,14 @@
 "use client"
 
-import { SignUp } from "@clerk/nextjs"
+import { SignIn } from "@clerk/nextjs"
 import { shadcn } from "@clerk/ui/themes"
 
-export default function SignUpPage() {
+export default function SignInPage() {
   return (
     <main className="flex min-h-svh items-center justify-center px-6 py-16">
-      <SignUp
+      <SignIn
         appearance={{ theme: shadcn }}
-        path="/sign-up"
+        path="/sign-in"
         routing="path"
       />
     </main>

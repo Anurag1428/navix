@@ -1,9 +1,7 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server"
-
-const isTestRoute = createRouteMatcher(["/test(.*)"])
+import { clerkMiddleware } from "@clerk/nextjs/server"
 
 export default clerkMiddleware(async (auth, req) => {
-  if (isTestRoute(req)) {
+  if (req.nextUrl.pathname === "/") {
     const { isAuthenticated, redirectToSignIn } = await auth()
 
     if (!isAuthenticated) {
