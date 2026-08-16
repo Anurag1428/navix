@@ -1,6 +1,12 @@
 "use client"
 
-import { MoreHorizontal, Plus, Workflow } from "lucide-react"
+import { useTransition } from "react"
+import Link from "next/link"
+import { Loader2, MoreHorizontal, Plus, Workflow as WorkflowIcon } from "lucide-react"
+
+import type { Workflow } from "@/lib/db/schema"
+
+import { generateSlug } from "@/features/workflows/lib/generate-slug"
 
 import {
   SidebarGroup,
@@ -19,22 +25,29 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 
-const WORKFLOWS = [
-  { id: "1", name: "dominant-wasp" },
-  { id: "2", name: "honest-reindeer" },
-  { id: "3", name: "expected-llama" },
-  { id: "4", name: "essential-ocelot" },
-  { id: "5", name: "creepy-echidna" },
-  { id: "6", name: "eastern-silkworm" },
-  { id: "7", name: "cultural-lion" },
-  { id: "8", name: "proud-weasel" },
-  { id: "9", name: "regional-bonobo" },
-  { id: "10", name: "silent-nautilus" },
-] as const
-
-export function WorkflowNav() {
+export function WorkflowNav({
+  workflows,
+  createWorkflow,
+}: {
+  workflows: Workflow[]
+  createWorkflow: (name: string) => Promise<void>
+}) {
   const { state } = useSidebar()
   const isCollapsed = state === "collapsed"
+
+  const [isPending, startTransition] = useTransition()
+
+  function handleCreateWorkflow() {
+    const slug = generateSlug()
+    const name = slug
+      .split("-")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+
+    startTransition(() => {
+      createWorkflow(name)
+    })
+  }
 
   if (isCollapsed) {
     return (
@@ -42,22 +55,32 @@ export function WorkflowNav() {
         <Popover>
           <PopoverTrigger asChild>
             <SidebarMenuButton tooltip="Workflows" className="h-10 rounded-lg">
-              <Workflow />
+              <WorkflowIcon />
               <span className="sr-only">Workflows</span>
             </SidebarMenuButton>
           </PopoverTrigger>
           <PopoverContent side="right" align="start" className="w-72 p-2">
             <SidebarMenu className="gap-1">
               <SidebarMenuItem>
-                <SidebarMenuButton className="h-10 rounded-lg">
-                  <Plus />
+                <SidebarMenuButton
+                  className="h-10 rounded-lg"
+                  onClick={handleCreateWorkflow}
+                  disabled={isPending}
+                >
+                  {isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Plus />
+                  )}
                   <span>New workflow</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-              {WORKFLOWS.map((workflow, index) => (
+              {workflows.map((workflow) => (
                 <SidebarMenuItem key={workflow.id}>
-                  <SidebarMenuButton isActive={index === 0}>
-                    <span>{workflow.name}</span>
+                  <SidebarMenuButton asChild className="h-10 rounded-lg">
+                    <Link href={`/workflow/${workflow.id}`}>
+                      <span>{workflow.name}</span>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
@@ -71,20 +94,27 @@ export function WorkflowNav() {
   return (
     <SidebarGroup>
       <SidebarGroupLabel>Workflows</SidebarGroupLabel>
-      <SidebarGroupAction title="New workflow">
-        <Plus className="size-4" />
+      <SidebarGroupAction
+        title="New workflow"
+        onClick={handleCreateWorkflow}
+        disabled={isPending}
+      >
+        {isPending ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Plus className="size-4" />
+        )}
         <span className="sr-only">New workflow</span>
       </SidebarGroupAction>
 
       <SidebarGroupContent>
         <SidebarMenu className="gap-1">
-          {WORKFLOWS.map((workflow, index) => (
+          {workflows.map((workflow) => (
             <SidebarMenuItem key={workflow.id}>
-              <SidebarMenuButton
-                isActive={index === 0}
-                className="h-10 rounded-lg"
-              >
-                <span className="truncate font-normal">{workflow.name}</span>
+              <SidebarMenuButton asChild className="h-10 rounded-lg">
+                <Link href={`/workflow/${workflow.id}`}>
+                  <span className="truncate font-normal">{workflow.name}</span>
+                </Link>
               </SidebarMenuButton>
 
               <SidebarMenuAction showOnHover>
