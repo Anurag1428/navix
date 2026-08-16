@@ -1,21 +1,22 @@
 {
-  "id": "2159aefe-a070-4d1e-9f7b-c23331f1e292",
+  "id": "5f796ade-2a57-45ab-996f-c97b0323950d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.users": {
-      "name": "users",
+    "public.workflows": {
+      "name": "workflows",
       "schema": "",
       "columns": {
         "id": {
           "name": "id",
-          "type": "text",
+          "type": "uuid",
           "primaryKey": true,
-          "notNull": true
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
-        "email": {
-          "name": "email",
+        "org_id": {
+          "name": "org_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -23,6 +24,12 @@
         "name": {
           "name": "name",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "graph": {
+          "name": "graph",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -44,15 +51,7 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "users_email_unique": {
-          "name": "users_email_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "email"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

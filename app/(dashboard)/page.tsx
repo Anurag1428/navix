@@ -1,6 +1,7 @@
 "use client"
 
-import { Plus, Workflow } from "lucide-react"
+import { useTransition } from "react"
+import { Loader2, Plus, Workflow } from "lucide-react"
 import {
   Empty,
   EmptyContent,
@@ -10,8 +11,24 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Button } from "@/components/ui/button"
+import { generateSlug } from "@/features/workflows/lib/generate-slug"
+import { createWorkflowAction } from "@/features/workflows/actions"
 
 export default function Page() {
+  const [isPending, startTransition] = useTransition()
+
+  function handleCreateWorkflow() {
+    const slug = generateSlug()
+    const name = slug
+      .split("-")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+
+    startTransition(() => {
+      createWorkflowAction(name)
+    })
+  }
+
   return (
     <div className="flex min-h-full flex-1 py-1 pl-1 pr-1.5 md:py-1.5 md:pl-1.5 md:pr-2">
       <Empty className="min-h-full w-full rounded-2xl border border-solid border-border/70 bg-background/80 p-6 shadow-[0_24px_60px_-40px_rgba(0,0,0,0.35)] backdrop-blur-sm md:p-10">
@@ -27,8 +44,8 @@ export default function Page() {
             </EmptyDescription>
           </EmptyContent>
           <div className="mt-4 flex gap-2">
-            <Button>
-              <Plus />
+            <Button onClick={handleCreateWorkflow} disabled={isPending}>
+              {isPending ? <Loader2 className="animate-spin" /> : <Plus />}
               Create workflow
             </Button>
           </div>
