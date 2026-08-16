@@ -2,6 +2,7 @@
 
 import { useTransition } from "react"
 import Link from "next/link"
+import { usePathname } from "next/navigation"
 import { Loader2, MoreHorizontal, Plus, Workflow as WorkflowIcon } from "lucide-react"
 
 import type { Workflow } from "@/lib/db/schema"
@@ -34,6 +35,11 @@ export function WorkflowNav({
 }) {
   const { state } = useSidebar()
   const isCollapsed = state === "collapsed"
+
+  const pathname = usePathname()
+  const activeWorkflowId = pathname.startsWith("/workflows/")
+    ? pathname.slice("/workflows/".length)
+    : null
 
   const [isPending, startTransition] = useTransition()
 
@@ -77,8 +83,12 @@ export function WorkflowNav({
               </SidebarMenuItem>
               {workflows.map((workflow) => (
                 <SidebarMenuItem key={workflow.id}>
-                  <SidebarMenuButton asChild className="h-10 rounded-lg">
-                    <Link href={`/workflow/${workflow.id}`}>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={workflow.id === activeWorkflowId}
+                    className="h-10 rounded-lg"
+                  >
+                    <Link href={`/workflows/${workflow.id}`}>
                       <span>{workflow.name}</span>
                     </Link>
                   </SidebarMenuButton>
@@ -111,8 +121,12 @@ export function WorkflowNav({
         <SidebarMenu className="gap-1">
           {workflows.map((workflow) => (
             <SidebarMenuItem key={workflow.id}>
-              <SidebarMenuButton asChild className="h-10 rounded-lg">
-                <Link href={`/workflow/${workflow.id}`}>
+              <SidebarMenuButton
+                asChild
+                isActive={workflow.id === activeWorkflowId}
+                className="h-10 rounded-lg"
+              >
+                <Link href={`/workflows/${workflow.id}`}>
                   <span className="truncate font-normal">{workflow.name}</span>
                 </Link>
               </SidebarMenuButton>
