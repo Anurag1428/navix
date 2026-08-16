@@ -1,3 +1,5 @@
+import { WorkflowShell } from "@/features/workflows/components/workflow-shell"
+
 export default async function WorkflowPage({
   params,
 }: {
@@ -11,8 +13,8 @@ export default async function WorkflowPage({
         <h1 className="text-lg font-semibold">Workflow {id}</h1>
       </header>
 
-      <div className="flex min-h-full flex-1 items-center justify-center rounded-2xl border border-dashed border-border/70 bg-background/40">
-        <p className="text-sm text-muted-foreground">Workflow editor coming soon</p>
+      <div className="flex min-h-full flex-1 rounded-2xl border border-border/70 bg-background/40">
+        <WorkflowShell workflowId={id} />
       </div>
     </div>
   )
