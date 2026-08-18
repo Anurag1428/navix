@@ -21,6 +21,7 @@
     "@clerk/ui": "^1.26.1",
     "@neondatabase/serverless": "^1.1.0",
     "@shadcn/react": "^0.2.1",
+    "@trigger.dev/react-hooks": "^4.5.11",
     "@trigger.dev/sdk": "4.5.11",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
