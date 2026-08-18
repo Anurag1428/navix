@@ -14,7 +14,7 @@ export default async function WorkflowPage({
       </header>
 
       <div className="flex min-h-full flex-1 rounded-2xl border border-border/70 bg-background/40">
-        <WorkflowShell workflowId={id} />
+        <WorkflowShell />
       </div>
     </div>
   )
