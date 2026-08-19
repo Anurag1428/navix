@@ -13,7 +13,7 @@ export default async function WorkflowPage({
 
   if (!orgId) notFound()
 
-  const [workflow] = await getWorkflow(id, orgId)
+  const [workflow] = await getWorkflow(orgId, id)
   if (!workflow) notFound()
 
   return (

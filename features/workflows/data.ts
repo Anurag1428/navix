@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db/index";
 import { workflows } from "@/lib/db/schema";
@@ -18,9 +18,9 @@ export function createWorkflow(orgId: string, name: string) {
     .returning();
 }
 
-export function getWorkflow(id: string, orgId: string) {
+export function getWorkflow(orgId: string, id: string) {
   return db
     .select()
     .from(workflows)
-    .where(eq(workflows.id, id) && eq(workflows.orgId, orgId));
+    .where(and(eq(workflows.id, id), eq(workflows.orgId, orgId)));
 }
