@@ -15,47 +15,26 @@ import {
   type ColorMode,
   type Connection,
   type Edge,
-  type Node,
+  NodeTypes,
 } from "@xyflow/react"
+
+import {StepNode} from "@/features/workflows/components/step-node"
+import type { StepNodeType } from "@/features/workflows/nodes/node-registry"
 
 import "@xyflow/react/dist/style.css"
 
-const initialNodes: Node[] = [
+const nodeTypes: NodeTypes = { step: StepNode }
+
+const initialNodes: StepNodeType[] = [
   {
-    id: "n1",
+    id: "start",
+    type: "step",
     position: { x: 0, y: 0 },
-    data: { label: "Start" },
-    type: "input",
-  },
-  {
-    id: "n2",
-    position: { x: 0, y: 150 },
-    data: { label: "Run a task" },
-  },
-  {
-    id: "n3",
-    position: { x: 0, y: 300 },
-    data: { label: "End" },
-    type: "output",
+    data: { type: "start", kind: "trigger", title: "Start", values: {} },
   },
 ]
 
-const initialEdges: Edge[] = [
-  {
-    id: "n1-n2",
-    source: "n1",
-    target: "n2",
-    type: "smoothstep",
-    label: "connects with",
-  },
-  {
-    id: "n2-n3",
-    source: "n2",
-    target: "n3",
-    type: "smoothstep",
-    label: "connects with",
-  },
-]
+const initialEdges: Edge[] = []
 
 const emptySubscribe = () => () => {}
 
@@ -79,6 +58,7 @@ export function WorkflowCanvas() {
   return (
     <div className="size-full">
       <ReactFlow
+        nodeTypes={nodeTypes}
         colorMode={(mounted ? (resolvedTheme ?? "light") : "light") as ColorMode}
         nodes={nodes}
         edges={edges}
