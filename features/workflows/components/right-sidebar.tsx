@@ -6,7 +6,7 @@ import { Loader2, PlayIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 import { runWorkflowAction } from "../actions"
-import type { ActiveRun } from "./workflow-shell"
+import type { ActiveRun } from "./flow"
 
 export function RightSidebar({ onRun }: { onRun: (run: ActiveRun) => void }) {
   const [isPending, startTransition] = useTransition()
