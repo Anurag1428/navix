@@ -10,6 +10,7 @@ import {
 
 import { RightSidebar } from "./right-sidebar"
 import { RunFeedback } from "./run-feedback"
+import { WorkflowCanvas } from "./workflow-canvas"
 
 export type ActiveRun = {
   runId: string
@@ -24,9 +25,7 @@ export function WorkflowShell() {
       <ResizablePanel minSize="30rem" className="size-full">
         <ResizablePanelGroup orientation="vertical" className="size-full">
           <ResizablePanel minSize="18rem">
-            <div className="flex size-full items-center justify-center">
-              <p className="text-sm text-muted-foreground">Canvas</p>
-            </div>
+            <WorkflowCanvas />
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize="8rem" minSize="6rem">
