@@ -23,6 +23,7 @@
     "@shadcn/react": "^0.2.1",
     "@trigger.dev/react-hooks": "^4.5.11",
     "@trigger.dev/sdk": "4.5.11",
+    "@xyflow/react": "^12.11.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
