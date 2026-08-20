@@ -5,6 +5,7 @@ import { getWorkflow } from "@/features/workflows/data"
 import { Flow } from "@/features/workflows/components/flow"
 import { Room } from "@/features/workflows/components/room"
 import { WorkflowShell } from "@/features/workflows/components/workflow-shell"
+import { liveblocks } from "@/lib/liveblocks"
 
 export default async function WorkflowPage({
   params,
@@ -18,6 +19,17 @@ export default async function WorkflowPage({
 
   const [workflow] = await getWorkflow(orgId, id)
   if (!workflow) notFound()
+
+  await liveblocks.getOrCreateRoom(id, {
+    defaultAccesses: [],
+    groupsAccesses: {
+      [orgId]: ["room:write"],
+    },
+    organizationId: orgId,
+    metadata: {
+      name: workflow.name,
+    },
+  })
 
   return (
     <div className="flex min-h-full flex-1 flex-col gap-2 p-2 md:p-2.5">
