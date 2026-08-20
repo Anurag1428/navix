@@ -14,15 +14,8 @@ export function Room({
   roomId: string
   children: ReactNode
 }) {
-  const publicApiKey = process.env.NEXT_PUBLIC_LIVEBLOCKS_PUBLIC_KEY
-  if (!publicApiKey) {
-    throw new Error(
-      "NEXT_PUBLIC_LIVEBLOCKS_PUBLIC_KEY is not set — add it to .env.local",
-    )
-  }
-
   return (
-    <LiveblocksProvider throttle={16} publicApiKey={publicApiKey}>
+    <LiveblocksProvider throttle={16} authEndpoint="/api/liveblocks/auth">
       <RoomProvider id={roomId}>
         <ClientSideSuspense fallback={<div>Loading…</div>}>
           {children}
