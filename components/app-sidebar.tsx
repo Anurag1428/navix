@@ -22,6 +22,9 @@ export async function AppSidebar() {
       <SidebarHeader className="p-2">
         <div className="flex items-center gap-1">
           <OrganizationSwitcher
+          afterCreateOrganizationUrl="/"
+          afterSelectOrganizationUrl="/"
+          afterLeaveOrganizationUrl="/"
             hidePersonal
             appearance={{
               elements: {
