@@ -11,6 +11,7 @@ import {
   NodeTypes,
 } from "@xyflow/react"
 import { useLiveblocksFlow, Cursors } from "@liveblocks/react-flow"
+import { AvatarStack } from "@liveblocks/react-ui"
 
 import { StepNode } from "@/features/workflows/components/step-node"
 import type { StepNodeType } from "@/features/workflows/nodes/node-registry"
@@ -59,7 +60,7 @@ export function Canvas() {
     })
 
   return (
-    <div className="size-full">
+    <div className="size-full relative">
       <ReactFlow
         nodeTypes={nodeTypes}
         nodes={nodes}
@@ -88,6 +89,9 @@ export function Canvas() {
         <Controls />
         <Cursors />
       </ReactFlow>
+      <div className="absolute top-4 right-4 z-50">
+        <AvatarStack />
+      </div>
     </div>
   )
 }
