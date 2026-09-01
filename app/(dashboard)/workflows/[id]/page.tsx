@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation"
 import { auth } from "@clerk/nextjs/server"
+import { ReactFlowProvider } from "@xyflow/react"
 
 import { getWorkflow } from "@/features/workflows/data"
 import { Flow } from "@/features/workflows/components/flow"
@@ -39,9 +40,11 @@ export default async function WorkflowPage({
 
       <div className="flex min-h-full flex-1 rounded-2xl border border-border/70 bg-background/40">
         <Room roomId={id}>
-          <WorkflowShell workflowId={id}>
-            <Flow />
-          </WorkflowShell>
+          <ReactFlowProvider>
+            <WorkflowShell workflowId={id}>
+              <Flow />
+            </WorkflowShell>
+          </ReactFlowProvider>
         </Room>
       </div>
     </div>
