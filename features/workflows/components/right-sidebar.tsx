@@ -2,6 +2,8 @@
 
 import { useState } from "react"
 import { MoreHorizontal, Play, Trash2 } from "lucide-react"
+import { useReactFlow } from "@xyflow/react"
+import { toast } from "sonner"
 
 import {
   Accordion,
@@ -21,6 +23,8 @@ import { Label } from "@/components/ui/label"
 import { ResizablePanel } from "@/components/ui/resizable"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
+import { useLiveblocksFlowApi } from "./liveblocks-flow-context"
+import type { ActiveRun } from "./flow"
 
 import {
   nodeRegistry,
@@ -158,9 +162,42 @@ const definitions = Object.values(nodeRegistry)
 
 // The Toolbar tab: a button per node type that adds it to the canvas.
 function Palette() {
+  const { getNodes, screenToFlowPosition } = useReactFlow<StepNodeType>()
+  const { addNode } = useLiveblocksFlowApi()
+
   const add = (type: NodeType) => {
-    // TODO: add the clicked node to the canvas (one trigger max).
-    void type
+    const def = nodeRegistry[type]
+    const nodes = getNodes()
+
+    if (
+      def.kind === "trigger" &&
+      nodes.some((node) => node.data.kind === "trigger")
+    ) {
+      toast.error("A workflow can only have one trigger.")
+      return
+    }
+
+    const canvas = document.querySelector<HTMLElement>("[data-flow-canvas]")
+    if (!canvas) return
+
+    const bounds = canvas.getBoundingClientRect()
+    const position = screenToFlowPosition({
+      x: bounds.left + bounds.width / 2,
+      y: bounds.top + bounds.height / 2,
+    })
+    const count = nodes.filter((node) => node.data.type === type).length
+
+    addNode({
+      id: crypto.randomUUID(),
+      type: "step",
+      position,
+      data: {
+        type,
+        kind: def.kind,
+        title: def.kind === "action" ? `${def.label}${count + 1}` : def.label,
+        values: {},
+      },
+    })
   }
 
   return (
@@ -250,8 +287,13 @@ function RunButton() {
 // The sidebar itself — header on top, then the Toolbar / Editor tabs.
 // ---------------------------------------------------------------------------
 
-export function RightSidebar() {
+export function RightSidebar({
+  onRun: _onRun,
+}: {
+  onRun: React.Dispatch<React.SetStateAction<ActiveRun | null>>
+}) {
   const [tab, setTab] = useState("toolbar")
+  void _onRun
 
   // TODO: read the currently selected node from React Flow.
   const selected: StepNodeType | undefined = undefined

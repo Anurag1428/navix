@@ -8,9 +8,13 @@ import {
   ConnectionLineType,
   type ColorMode,
   type Edge,
+  type OnConnect,
+  type OnDelete,
+  type OnEdgesChange,
+  type OnNodesChange,
   NodeTypes,
 } from "@xyflow/react"
-import { useLiveblocksFlow, Cursors } from "@liveblocks/react-flow"
+import { Cursors } from "@liveblocks/react-flow"
 import { AvatarStack } from "@liveblocks/react-ui"
 
 import { StepNode } from "@/features/workflows/components/step-node"
@@ -22,7 +26,7 @@ import "@liveblocks/react-flow/styles.css"
 
 const nodeTypes: NodeTypes = { step: StepNode }
 
-const initialNodes: StepNodeType[] = [
+export const initialNodes: StepNodeType[] = [
   {
     id: "start",
     type: "step",
@@ -31,7 +35,7 @@ const initialNodes: StepNodeType[] = [
   },
 ]
 
-const initialEdges: Edge[] = []
+export const initialEdges: Edge[] = []
 
 const emptySubscribe = () => () => {}
 
@@ -41,26 +45,35 @@ function useMounted() {
   return useSyncExternalStore(
     emptySubscribe,
     () => true,
-    () => false,
+    () => false
   )
 }
 
-export function Canvas() {
+type CanvasProps = {
+  nodes: StepNodeType[]
+  edges: Edge[]
+  onNodesChange: OnNodesChange<StepNodeType>
+  onEdgesChange: OnEdgesChange<Edge>
+  onConnect: OnConnect
+  onDelete: OnDelete<StepNodeType, Edge>
+}
+
+export function Canvas({
+  nodes,
+  edges,
+  onNodesChange,
+  onEdgesChange,
+  onConnect,
+  onDelete,
+}: CanvasProps) {
   const { resolvedTheme } = useTheme()
   const mounted = useMounted()
   const colorMode: ColorMode = mounted
-    ? (resolvedTheme as ColorMode) ?? "light"
+    ? ((resolvedTheme as ColorMode) ?? "light")
     : "light"
 
-  const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onDelete } =
-    useLiveblocksFlow({
-      suspense: true,
-      nodes: { initial: initialNodes },
-      edges: { initial: initialEdges },
-    })
-
   return (
-    <div className="size-full relative">
+    <div data-flow-canvas className="relative size-full">
       <ReactFlow
         nodeTypes={nodeTypes}
         nodes={nodes}
