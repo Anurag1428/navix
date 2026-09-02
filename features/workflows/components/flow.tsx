@@ -20,6 +20,7 @@ import { RightSidebar } from "./right-sidebar"
 import { RunFeedback } from "./run-feedback"
 import { Canvas, initialEdges, initialNodes } from "./workflow-canvas"
 import { LiveblocksFlowProvider } from "./liveblocks-flow-context"
+import { useWorkflowId } from "./workflow-shell"
 import type { StepNodeType } from "@/features/workflows/nodes/node-registry"
 
 export type ActiveRun = {
@@ -29,6 +30,7 @@ export type ActiveRun = {
 
 export function Flow() {
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null)
+  const workflowId = useWorkflowId()
   const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onDelete } =
     useLiveblocksFlow<StepNodeType, Edge>({
       suspense: true,
@@ -87,7 +89,7 @@ export function Flow() {
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize="16rem" minSize="14rem" maxSize="36rem">
-          <RightSidebar onRun={setActiveRun} />
+          <RightSidebar workflowId={workflowId} onRun={setActiveRun} />
         </ResizablePanel>
       </ResizablePanelGroup>
     </LiveblocksFlowProvider>

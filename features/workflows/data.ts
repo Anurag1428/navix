@@ -24,3 +24,10 @@ export function getWorkflow(orgId: string, id: string) {
     .from(workflows)
     .where(and(eq(workflows.id, id), eq(workflows.orgId, orgId)));
 }
+
+export function deleteWorkflow(orgId: string, id: string) {
+  return db
+    .delete(workflows)
+    .where(and(eq(workflows.id, id), eq(workflows.orgId, orgId)))
+    .returning();
+}
