@@ -36,11 +36,13 @@ export function createWorkflow(orgId: string, name: string) {
     .returning();
 }
 
-export function getWorkflow(orgId: string, id: string) {
-  return db
+export async function getWorkflow(orgId: string, id: string) {
+  const [workflow] = await db
     .select()
     .from(workflows)
-    .where(and(eq(workflows.id, id), eq(workflows.orgId, orgId)));
+    .where(and(eq(workflows.id, id), eq(workflows.orgId, orgId)))
+
+  return workflow
 }
 
 export function deleteWorkflow(orgId: string, id: string) {

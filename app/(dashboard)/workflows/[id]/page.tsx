@@ -18,7 +18,7 @@ export default async function WorkflowPage({
 
   if (!orgId) notFound()
 
-  const [workflow] = await getWorkflow(orgId, id)
+  const workflow = await getWorkflow(orgId, id)
   if (!workflow) notFound()
 
   await liveblocks.getOrCreateRoom(id, {
