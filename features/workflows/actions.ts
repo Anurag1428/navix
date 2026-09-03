@@ -8,6 +8,7 @@ import { redirect } from "next/navigation"
 import { liveblocks } from "@/lib/liveblocks"
 
 import type { helloWorldTask } from "@/src/trigger/example"
+import type { runWorkflowTask } from "@/features/workflows/tasks/run-workflow"
 
 import { createWorkflow, deleteWorkflow, saveWorkflowGraph } from "./data"
 import { WorkflowGraph } from "@/lib/db/schema"
@@ -33,10 +34,12 @@ export async function runWorkflowAction({
   
 await saveWorkflowGraph({ orgId, id, graph })
 
-  const handle = await tasks.trigger<typeof helloWorldTask>("hello-world", {
-    message: "Hello from right-sidebar",
-  })
-
+  const handle = await tasks.trigger<typeof runWorkflowTask>(
+    "run-workflow",
+    { workflowId: id, orgId },
+    { tags: [`workflow:${id}`] }
+  )
+  
   return {
     runId: handle.id,
     publicAccessToken: handle.publicAccessToken,
