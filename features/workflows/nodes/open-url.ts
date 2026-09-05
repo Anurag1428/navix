@@ -7,6 +7,12 @@ export async function openUrl({
     stagehand: Stagehand
     url: string
 }) {
+    if (!url) {
+        throw new Error(
+            "Open URL: nothing to navigate to. The URL field is empty — make sure upstream placeholders resolved (they must include a .path)."
+        )
+    }
+
     const page = await stagehand.browser.context.activePage()
 
     if (!page) {
@@ -18,8 +24,11 @@ export async function openUrl({
         timeout: 30_000,
     })
 
+    const resolvedUrl = await page.url()
+    const resolvedTitle = await page.title()
+
     return {
-        url: page.url(),
-        title: await page.title(),
+        url: resolvedUrl,
+        title: resolvedTitle,
     }
 }

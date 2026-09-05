@@ -7,7 +7,6 @@ import { redirect } from "next/navigation"
 
 import { liveblocks } from "@/lib/liveblocks"
 
-import type { helloWorldTask } from "@/src/trigger/example"
 import type { runWorkflowTask } from "@/features/workflows/tasks/run-workflow"
 
 import { createWorkflow, deleteWorkflow, saveWorkflowGraph } from "./data"
