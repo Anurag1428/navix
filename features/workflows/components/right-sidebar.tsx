@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useRef, useState, useTransition } from "react"
 import { MoreHorizontal, Play, Trash2 } from "lucide-react"
 import { useReactFlow, useStore } from "@xyflow/react"
 import { toast } from "sonner"
@@ -28,10 +28,12 @@ import { useLiveblocksFlowApi } from "./liveblocks-flow-context"
 import type { ActiveRun } from "./flow"
 
 import {
-  deleteWorkflowAction,
-  runWorkflowAction,
+    deleteWorkflowAction,
+    runWorkflowAction,
 } from "@/features/workflows/actions"
+import { interpolate } from "@/features/workflows/lib/interpolate"
 import { validateGraph } from "@/features/workflows/lib/validate-graph"
+import { useUpstreamConnections, useUpstreamValues } from "@/features/workflows/hooks/use-upstream-connections"
 
 import {
   nodeRegistry,
@@ -95,72 +97,181 @@ function Section({
 
 // An editor field that renders as either a single-line input or a text area.
 function Field({
-  field,
-  value,
-  onChange,
-}: {
-  field: NodeField
-  value: string
-  onChange: (value: string) => void
-}) {
-  const commonProps = {
-    id: field.key,
+    field,
     value,
-    placeholder: field.placeholder,
-    onChange: (
-      event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-    ) => onChange(event.target.value),
-  }
+    onChange,
+    onFocus,
+    registerRef,
+}: {
+    field: NodeField
+    value: string
+    onChange: (value: string) => void
+    onFocus: () => void
+    registerRef: (key: string) => (element: HTMLElement | null) => void
+}) {
+    const handleChange = (
+        event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+    ) => onChange(event.target.value)
+    const ref = registerRef(field.key)
 
-  if (field.multiline) {
-    return <Textarea {...commonProps} />
-  }
+    if (field.multiline) {
+        return (
+            <Textarea
+                id={field.key}
+                ref={ref as React.Ref<HTMLTextAreaElement>}
+                value={value}
+                placeholder={field.placeholder}
+                onChange={handleChange}
+                onFocus={onFocus}
+            />
+        )
+    }
 
-  return <Input {...commonProps} />
+    return (
+        <Input
+            id={field.key}
+            ref={ref as React.Ref<HTMLInputElement>}
+            value={value}
+            placeholder={field.placeholder}
+            onChange={handleChange}
+            onFocus={onFocus}
+        />
+    )
 }
 
 // The Editor tab: one input per field on the selected node, or an empty state.
 function Inspector({ node }: { node: StepNodeType | undefined }) {
-  const { updateNodeData } = useReactFlow<StepNodeType>()
-
-  if (!node) {
-    return (
-      <Section title="Editor">
-        <p className="p-3 text-sm text-muted-foreground">No node selected</p>
-      </Section>
+    const { updateNodeData } = useReactFlow<StepNodeType>()
+    const tokens = useUpstreamConnections(node?.id)
+    const upstreamValues = useUpstreamValues(node?.id)
+    const elementRefs = useRef(
+        new Map<string, HTMLInputElement | HTMLTextAreaElement>()
     )
-  }
+    const [activeField, setActiveField] = useState<string | null>(null)
 
-  const { type, title, values } = node.data
-  const def: NodeDefinition = nodeRegistry[type]
+    if (!node) {
+        return (
+            <Section title="Editor">
+                <p className="p-3 text-sm text-muted-foreground">No node selected</p>
+            </Section>
+        )
+    }
 
-  return (
-    <Section title={title} icon={<NodeIcon type={type} />}>
-      <div className="flex flex-col gap-3 p-3">
-        {def.fields.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No properties</p>
-        ) : (
-          def.fields.map((field) => (
-            <div key={field.key} className="flex flex-col gap-1.5">
-              <Label htmlFor={field.key} className="text-xs">
-                {field.label}
-                {field.required && <span className="text-destructive">*</span>}
-              </Label>
-              <Field
-                field={field}
-                value={values[field.key] ?? ""}
-                onChange={(value) => {
-                  updateNodeData(node.id, {
-                    values: { ...values, [field.key]: value },
-                  })
-                }}
-              />
+    const { type, title, values } = node.data
+    const def: NodeDefinition = nodeRegistry[type]
+
+    const registerRef = (key: string) => (element: HTMLElement | null) => {
+        if (element) {
+            elementRefs.current.set(
+                key,
+                element as HTMLInputElement | HTMLTextAreaElement
+            )
+        } else {
+            elementRefs.current.delete(key)
+        }
+    }
+
+    const setValue = (key: string, next: string) => {
+        updateNodeData(node.id, { values: { ...values, [key]: next } })
+    }
+
+    const insertToken = (token: string) => {
+        const fields = def.fields
+        if (fields.length === 0) return
+
+        const targetKey = activeField && fields.some((f) => f.key === activeField)
+            ? activeField
+            : fields[0].key
+        const element = elementRefs.current.get(targetKey) ?? null
+        const current = values[targetKey] ?? ""
+
+        if (!element) {
+            setValue(targetKey, current + token)
+            return
+        }
+
+        const start = element.selectionStart ?? current.length
+        const end = element.selectionEnd ?? current.length
+        const before = current.slice(0, start)
+        const after = current.slice(end)
+        const needsSpaceBefore = before.length > 0 && !/\s$/.test(before)
+        const needsSpaceAfter = after.length > 0 && !/^\s/.test(after)
+        const insertion = `${needsSpaceBefore ? " " : ""}${token}${needsSpaceAfter ? " " : ""}`
+        const next = before + insertion + after
+
+        setValue(targetKey, next)
+
+        requestAnimationFrame(() => {
+            const cursor = before.length + insertion.length
+            element.focus()
+            element.setSelectionRange(cursor, cursor)
+        })
+    }
+
+    return (
+        <Section title={title} icon={<NodeIcon type={type} />}>
+            <div className="flex flex-col gap-3 p-3">
+                {def.fields.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No properties</p>
+                ) : (
+                    def.fields.map((field) => {
+                        const raw = values[field.key] ?? ""
+                        const preview = interpolate(raw, upstreamValues)
+                        return (
+                            <div key={field.key} className="flex flex-col gap-1.5">
+                                <Label htmlFor={field.key} className="text-xs">
+                                    {field.label}
+                                    {field.required && <span className="text-destructive">*</span>}
+                                </Label>
+                                <Field
+                                    field={field}
+                                    value={raw}
+                                    onChange={(value) => setValue(field.key, value)}
+                                    onFocus={() => setActiveField(field.key)}
+                                    registerRef={registerRef}
+                                />
+                                {preview !== raw && (
+                                    <p
+                                        className="truncate text-xs text-muted-foreground/80"
+                                        title={preview}
+                                    >
+                                        <span className="text-muted-foreground/60">
+                                            Preview:
+                                        </span>{" "}
+                                        {preview || "empty"}
+                                    </p>
+                                )}
+                            </div>
+                        )
+                    })
+                )}
+
+                {tokens.length > 0 && (
+                    <div className="flex flex-col gap-1.5 border-t border-border/70 pt-3">
+                        <p className="text-xs font-medium text-muted-foreground">
+                            Connections
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                            {tokens.map((token) => (
+                                <Button
+                                    key={token.token}
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => insertToken(token.token)}
+                                    className="h-7 gap-1.5 px-2 text-xs"
+                                    title={token.token}
+                                >
+                                    <NodeIcon type={token.sourceType} className="size-5" />
+                                    {token.label}
+                                </Button>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
-          ))
-        )}
-      </div>
-    </Section>
-  )
+        </Section>
+    )
 }
 
 // ---------------------------------------------------------------------------

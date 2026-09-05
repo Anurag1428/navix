@@ -4,6 +4,7 @@ import { browserbase, Stagehand } from "@browserbasehq/stagehand"
 
 import { nodeExecutors } from "@/features/workflows/nodes/node-executors"
 import { getWorkflow } from "@/features/workflows/data"
+import { interpolate } from "@/features/workflows/lib/interpolate"
 
 export const runWorkflowTask = task({
     id: "run-workflow",
@@ -73,6 +74,11 @@ export const runWorkflowTask = task({
             return stagehand
         }
 
+        // Outputs of every node that has already run, keyed by node id.
+        // Populated as we go so downstream nodes can reference upstream
+        // outputs via {{ nodeId.path }} placeholders.
+        const outputs: Record<string, unknown> = {}
+
         try {
             for (const id of order) {
                 const node = byId.get(id)
@@ -86,10 +92,21 @@ export const runWorkflowTask = task({
                 const executor = nodeExecutors[node.data.type]
 
                 if (executor) {
-                    await executor({
-                        values: node.data.values,
+                    // Resolve any {{ nodeId.path }} placeholders in this
+                    // node's field values against outputs collected so far.
+                    const resolvedValues = Object.fromEntries(
+                        Object.entries(node.data.values).map(([key, value]) => [
+                            key,
+                            interpolate(value, outputs),
+                        ])
+                    )
+
+                    const result = await executor({
+                        values: resolvedValues,
                         getStagehand,
                     })
+
+                    outputs[node.id] = result
                 }
             }
 
