@@ -20,4 +20,7 @@ export default defineConfig({
   },
   // dirs: ["./src/trigger"],
   dirs: ["features"],
+  build: {
+    external: ["@browserbasehq/stagehand"],
+  },
 });
