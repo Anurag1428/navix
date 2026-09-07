@@ -15,7 +15,7 @@ const RUNNING_STATUSES = new Set(["QUEUED", "EXECUTING", "REATTEMPTING", "DELAYE
 const DONE_STATUSES = new Set(["COMPLETED", "FAILED", "CRASHED", "CANCELED", "TIMED_OUT", "EXPIRED"])
 
 export function RunFeedback({ runId, publicAccessToken }: RunFeedbackProps) {
-  const { run, error } = useRealtimeRun<typeof helloWorldTask>(runId, {
+  const { run, error } = useRealtimeRun(runId, {
     accessToken: publicAccessToken,
     skipColumns: ["payload"],
   })
