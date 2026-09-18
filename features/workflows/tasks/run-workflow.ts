@@ -81,6 +81,7 @@ export const runWorkflowTask = task({
             try {
                 browser = await browserbase.launch({
                     apiKey,
+                    userMetadata: { stagehand: "true" },
                 })
             } catch (error) {
                 // Stagehand v3 throws a generic BrowserbaseSessionError that
