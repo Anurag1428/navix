@@ -6,6 +6,7 @@ import type {
 } from "@/features/workflows/nodes/node-registry"
 import { openUrl } from "@/features/workflows/nodes/open-url"
 import { actNode } from "@/features/workflows/nodes/act"
+import { agentNode } from "@/features/workflows/nodes/agent"
 import { extractNode } from "@/features/workflows/nodes/extract"
 import { observeNode } from "@/features/workflows/nodes/observe"
 
@@ -21,6 +22,8 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         openUrl({ stagehand: await getStagehand(), url: values.url }),
     act: async ({ values, getStagehand }) =>
         actNode({ stagehand: await getStagehand(), instruction: values.instruction }),
+    agent: async ({ values, getStagehand }) =>
+        agentNode({ stagehand: await getStagehand(), instruction: values.instruction }),
     extract: async ({ values, getStagehand }) =>
         extractNode({ stagehand: await getStagehand(), instruction: values.instruction }),
     observe: async ({ values, getStagehand }) =>
