@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback } from "react"
 import {
   type Edge,
   type OnConnect,
@@ -21,15 +21,13 @@ import { RunFeedback } from "./run-feedback"
 import { Canvas, initialEdges, initialNodes } from "./workflow-canvas"
 import { LiveblocksFlowProvider } from "./liveblocks-flow-context"
 import { useWorkflowId } from "./workflow-shell"
+import { useWorkflowRunsApi, type ActiveRun } from "./workflow-runs-provider"
 import type { StepNodeType } from "@/features/workflows/nodes/node-registry"
 
-export type ActiveRun = {
-  runId: string
-  publicAccessToken: string
-}
+export type { ActiveRun }
 
 export function Flow() {
-  const [activeRun, setActiveRun] = useState<ActiveRun | null>(null)
+  const { activeRun, setActiveRun } = useWorkflowRunsApi()
   const workflowId = useWorkflowId()
   const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onDelete } =
     useLiveblocksFlow<StepNodeType, Edge>({

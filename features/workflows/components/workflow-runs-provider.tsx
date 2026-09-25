@@ -4,33 +4,49 @@ import {
   createContext,
   useContext,
   useMemo,
+  useState,
   type ReactNode,
 } from "react"
-import { useRealtimeRunsWithTag } from "@trigger.dev/react-hooks"
+import { useRealtimeRun, useRealtimeRunsWithTag } from "@trigger.dev/react-hooks"
 
 import type { runWorkflowTask, RunStep } from "@/features/workflows/tasks/run-workflow"
 
-type LatestRunSteps = {
-    steps: RunStep[] | undefined
-    isLive: boolean
+export type ActiveRun = {
+    runId: string
+    publicAccessToken: string
 }
 
-type WorkflowRunsApi = {
+export type LatestRunSteps = {
+    steps: RunStep[] | undefined
+    isLive: boolean
+    runStatus?: string
+}
+
+export type WorkflowRunsApi = {
     runs: ReturnType<
         typeof useRealtimeRunsWithTag<typeof runWorkflowTask>
     >["runs"]
     error: Error | undefined
+    activeRun: ActiveRun | null
+    setActiveRun: React.Dispatch<React.SetStateAction<ActiveRun | null>>
     useLatestRunSteps: () => LatestRunSteps
 }
 
 const WorkflowRunsContext = createContext<WorkflowRunsApi | null>(null)
 
-const LIVE_STATUSES = new Set([
-    "QUEUED",
-    "EXECUTING",
-    "REATTEMPTING",
-    "DELAYED",
+const FINISHED_STATUSES = new Set([
+    "COMPLETED",
+    "FAILED",
+    "CANCELED",
+    "CRASHED",
+    "TIMED_OUT",
+    "EXPIRED",
 ])
+
+function isLiveStatus(status?: string): boolean {
+    if (!status) return false
+    return !FINISHED_STATUSES.has(status)
+}
 
 export function WorkflowRunsProvider({
     workflowId,
@@ -41,30 +57,46 @@ export function WorkflowRunsProvider({
     publicAccessToken: string
     children: ReactNode
 }) {
-    const { runs, error } = useRealtimeRunsWithTag<typeof runWorkflowTask>(
+    const [activeRun, setActiveRun] = useState<ActiveRun | null>(null)
+
+    const { runs, error: tagError } = useRealtimeRunsWithTag<typeof runWorkflowTask>(
         `workflow:${workflowId}`,
         { accessToken: publicAccessToken },
     )
 
+    const latestTagRun = useMemo(() => {
+        return runs
+            .slice()
+            .sort(
+                (a, b) =>
+                    new Date(b.createdAt).getTime() -
+                    new Date(a.createdAt).getTime(),
+            )[0]
+    }, [runs])
+
+    const targetRunId = activeRun?.runId ?? (latestTagRun && isLiveStatus(latestTagRun.status) ? latestTagRun.id : undefined)
+    const targetToken = activeRun ? activeRun.publicAccessToken : publicAccessToken
+
+    const { run: liveRun, error: liveRunError } = useRealtimeRun(targetRunId ?? "", {
+        accessToken: targetToken,
+        enabled: !!targetRunId,
+        skipColumns: ["payload"],
+    })
+
+    const error = tagError ?? liveRunError
+
     const value = useMemo<WorkflowRunsApi>(() => {
         const useLatestRunSteps = (): LatestRunSteps => {
-            const latest = runs
-                .slice()
-                .sort(
-                    (a, b) =>
-                        new Date(b.createdAt).getTime() -
-                        new Date(a.createdAt).getTime(),
-                )[0]
+            const currentRun = activeRun
+                ? (liveRun?.id === activeRun.runId ? liveRun : undefined)
+                : (targetRunId && liveRun?.id === targetRunId ? liveRun : latestTagRun)
 
-            if (!latest) {
+            if (!currentRun) {
                 return { steps: undefined, isLive: false }
             }
 
-            const outputSteps = (latest.output as { steps?: RunStep[] } | undefined)
-                ?.steps
-            const metadataSteps = latest.metadata?.steps as
-                | RunStep[]
-                | undefined
+            const outputSteps = (currentRun.output as { steps?: RunStep[] } | undefined)?.steps
+            const metadataSteps = currentRun.metadata?.steps as RunStep[] | undefined
 
             const steps =
                 Array.isArray(outputSteps) && outputSteps.length > 0
@@ -73,12 +105,13 @@ export function WorkflowRunsProvider({
 
             return {
                 steps,
-                isLive: LIVE_STATUSES.has(latest.status),
+                isLive: isLiveStatus(currentRun.status),
+                runStatus: currentRun.status,
             }
         }
 
-        return { runs, error, useLatestRunSteps }
-    }, [runs, error])
+        return { runs, error, activeRun, setActiveRun, useLatestRunSteps }
+    }, [runs, error, activeRun, targetRunId, liveRun, latestTagRun])
 
     return (
         <WorkflowRunsContext.Provider value={value}>

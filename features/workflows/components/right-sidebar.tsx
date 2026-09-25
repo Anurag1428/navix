@@ -400,7 +400,13 @@ function ActionsMenu({ workflowId }: { workflowId: string }) {
 }
 
 // Kicks off a run of the current workflow.
-function RunButton({ workflowId }: { workflowId: string }) {
+function RunButton({
+  workflowId,
+  onRun,
+}: {
+  workflowId: string
+  onRun: (run: ActiveRun) => void
+}) {
   const {getNodes, getEdges} = useReactFlow<StepNodeType>()
   const [isPending, startTransition ] = useTransition()
 
@@ -419,7 +425,8 @@ function RunButton({ workflowId }: { workflowId: string }) {
         }
 
         startTransition(async () => {
-          await runWorkflowAction({ id: workflowId, graph })
+          const run = await runWorkflowAction({ id: workflowId, graph })
+          onRun(run)
         })
       }}
     >
@@ -435,13 +442,12 @@ function RunButton({ workflowId }: { workflowId: string }) {
 
 export function RightSidebar({
   workflowId,
-  onRun: _onRun,
+  onRun,
 }: {
   workflowId: string
   onRun: React.Dispatch<React.SetStateAction<ActiveRun | null>>
 }) {
   const [tab, setTab] = useState("toolbar")
-  void _onRun
 
   // TODO: read the currently selected node from React Flow.
   const selected = useStore(
@@ -466,7 +472,7 @@ export function RightSidebar({
       <Tabs value={tab} onValueChange={setTab} className="size-full gap-0">
         <div className="flex items-center justify-between border-b border-border p-2">
           <ActionsMenu workflowId={workflowId} />
-          <RunButton workflowId={workflowId} />
+          <RunButton workflowId={workflowId} onRun={onRun} />
         </div>
         <TabsList className="m-2 w-fit bg-background">
           <TabsTrigger

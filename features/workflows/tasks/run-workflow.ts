@@ -54,12 +54,13 @@ export const runWorkflowTask = task({
             steps: order.length,
         })
 
-        const steps: RunStep[] = order.map((id) => ({
+        let steps: RunStep[] = order.map((id) => ({
             id,
             status: "pending",
         }))
 
         metadata.set("steps", steps)
+        await metadata.flush()
 
         let browser: Awaited<ReturnType<typeof browserbase.launch>> | undefined
         let stagehand: Stagehand | undefined
@@ -130,10 +131,13 @@ export const runWorkflowTask = task({
             stepId: string,
             status: RunStep["status"]
         ): void => {
-            const step = steps.find((s) => s.id === stepId)
-            if (step) {
-                step.status = status
+            if (!steps.some((step) => step.id === stepId)) {
+                return
             }
+
+            steps = steps.map((step) =>
+                step.id === stepId ? { ...step, status } : step
+            )
             metadata.set("steps", steps)
         }
 
@@ -145,13 +149,28 @@ export const runWorkflowTask = task({
                     throw new Error(`Node ${id} not found`)
                 }
 
-                logger.log(`Running step: ${node.data.title}`)
+                const logContext = {
+                    nodeId: node.id,
+                    nodeType: node.data.type,
+                    title: node.data.title,
+                }
 
+                console.log(`NODE_EXEC_START ${node.id} "${node.data.title}" ${node.data.type}`)
+                logger.info("Node START", logContext)
                 setStepStatus(node.id, "running")
                 await metadata.flush()
 
                 try {
-                    const executor = nodeExecutors[node.data.type]
+                    const executor =
+                        node.data.kind === "action"
+                            ? nodeExecutors[node.data.type]
+                            : undefined
+
+                    if (node.data.kind === "action" && !executor) {
+                        throw new Error(
+                            `No executor registered for node type "${node.data.type}"`
+                        )
+                    }
 
                     if (executor) {
                         // Resolve any {{ nodeId.path }} placeholders in this
@@ -169,6 +188,7 @@ export const runWorkflowTask = task({
                         const result = await retryStep(
                             () =>
                                 executor({
+                                    nodeId: node.id,
                                     values: resolvedValues,
                                     getStagehand,
                                 }),
@@ -184,7 +204,20 @@ export const runWorkflowTask = task({
                     }
 
                     setStepStatus(node.id, "done")
+                    await metadata.flush()
+                    console.log(`NODE_EXEC_SUCCESS ${node.id} "${node.data.title}" ${node.data.type}`)
+                    logger.info("Node SUCCESS", logContext)
                 } catch (error) {
+                    console.log(`NODE_EXEC_ERROR ${node.id} "${node.data.title}" ${node.data.type}`)
+                    logger.error("Node ERROR", {
+                        ...logContext,
+                        message:
+                            error instanceof Error
+                                ? error.message
+                                : String(error),
+                        stack:
+                            error instanceof Error ? error.stack : undefined,
+                    })
                     setStepStatus(node.id, "failed")
                     await metadata.flush()
                     throw error
@@ -197,8 +230,27 @@ export const runWorkflowTask = task({
         } finally {
             // Stagehand does NOT own the Browserbase browser.
             // Close Stagehand first, then the browser.
-            await stagehand?.close()
-            await browser?.close()
+            // Safely catch cleanup errors so socket teardowns do not mark successful runs as failed.
+            try {
+                await stagehand?.close()
+            } catch (closeError) {
+                logger.warn("Stagehand close warning", {
+                    message:
+                        closeError instanceof Error
+                            ? closeError.message
+                            : String(closeError),
+                })
+            }
+            try {
+                await browser?.close()
+            } catch (closeError) {
+                logger.warn("Browser close warning", {
+                    message:
+                        closeError instanceof Error
+                            ? closeError.message
+                            : String(closeError),
+                })
+            }
         }
     },
 })
