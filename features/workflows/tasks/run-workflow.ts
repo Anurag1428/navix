@@ -5,10 +5,22 @@ import { browserbase, Stagehand } from "@browserbasehq/stagehand"
 import { nodeExecutors } from "@/features/workflows/nodes/node-executors"
 import { getWorkflow } from "@/features/workflows/data"
 import { interpolate } from "@/features/workflows/lib/interpolate"
+import { nodeRegistry, type NodeType } from "@/features/workflows/nodes/node-registry"
 
 export type RunStep = {
     id: string
+    nodeId: string
+    nodeType: string
+    type?: string
+    title: string
     status: "pending" | "running" | "done" | "failed"
+    startedAt?: string
+    completedAt?: string
+    finishedAt?: string
+    durationMs?: number
+    output?: unknown
+    error?: string
+    errorStack?: string
 }
 
 // How many times to retry a single step before giving up. The step
@@ -54,12 +66,25 @@ export const runWorkflowTask = task({
             steps: order.length,
         })
 
-        let steps: RunStep[] = order.map((id) => ({
-            id,
-            status: "pending",
-        }))
+        let steps: RunStep[] = order.map((id) => {
+            const node = byId.get(id)
+            const nodeType = (node?.data?.type ?? "unknown") as string
+            const title =
+                node?.data?.title ??
+                (nodeType in nodeRegistry
+                    ? nodeRegistry[nodeType as NodeType].label
+                    : nodeType)
+            return {
+                id,
+                nodeId: id,
+                nodeType,
+                type: nodeType,
+                title,
+                status: "pending",
+            }
+        })
 
-        metadata.set("steps", steps)
+        metadata.set("steps", steps as any)
         await metadata.flush()
 
         let browser: Awaited<ReturnType<typeof browserbase.launch>> | undefined
@@ -127,18 +152,26 @@ export const runWorkflowTask = task({
         // outputs via {{ nodeId.path }} placeholders.
         const outputs: Record<string, unknown> = {}
 
-        const setStepStatus = (
+        const updateStep = (
             stepId: string,
-            status: RunStep["status"]
+            updates: Partial<RunStep>
         ): void => {
             if (!steps.some((step) => step.id === stepId)) {
                 return
             }
 
             steps = steps.map((step) =>
-                step.id === stepId ? { ...step, status } : step
+                step.id === stepId ? { ...step, ...updates } : step
             )
-            metadata.set("steps", steps)
+            metadata.set("steps", steps as any)
+        }
+
+        const setStepStatus = (
+            stepId: string,
+            status: RunStep["status"],
+            extra?: Partial<RunStep>
+        ): void => {
+            updateStep(stepId, { status, ...extra })
         }
 
         try {
@@ -157,7 +190,13 @@ export const runWorkflowTask = task({
 
                 console.log(`NODE_EXEC_START ${node.id} "${node.data.title}" ${node.data.type}`)
                 logger.info("Node START", logContext)
-                setStepStatus(node.id, "running")
+
+                const stepStartTime = Date.now()
+                const startedAt = new Date().toISOString()
+
+                setStepStatus(node.id, "running", {
+                    startedAt,
+                })
                 await metadata.flush()
 
                 try {
@@ -172,6 +211,8 @@ export const runWorkflowTask = task({
                         )
                     }
 
+                    let result: unknown = undefined
+
                     if (executor) {
                         // Resolve any {{ nodeId.path }} placeholders in this
                         // node's field values against outputs collected so far.
@@ -185,7 +226,7 @@ export const runWorkflowTask = task({
                         // Retry the step in-place so transient Browserbase /
                         // navigation errors don't kill the whole workflow.
                         // Prior outputs and the stagehand session survive.
-                        const result = await retryStep(
+                        result = await retryStep(
                             () =>
                                 executor({
                                     nodeId: node.id,
@@ -203,22 +244,43 @@ export const runWorkflowTask = task({
                         outputs[node.id] = result
                     }
 
-                    setStepStatus(node.id, "done")
+                    const completedAt = new Date().toISOString()
+                    const durationMs = Date.now() - stepStartTime
+
+                    setStepStatus(node.id, "done", {
+                        completedAt,
+                        finishedAt: completedAt,
+                        durationMs,
+                        output: result,
+                    })
                     await metadata.flush()
                     console.log(`NODE_EXEC_SUCCESS ${node.id} "${node.data.title}" ${node.data.type}`)
                     logger.info("Node SUCCESS", logContext)
                 } catch (error) {
                     console.log(`NODE_EXEC_ERROR ${node.id} "${node.data.title}" ${node.data.type}`)
+                    const errorMessage =
+                        error instanceof Error
+                            ? error.message
+                            : String(error)
+                    const errorStack =
+                        error instanceof Error ? error.stack : undefined
+
                     logger.error("Node ERROR", {
                         ...logContext,
-                        message:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                        stack:
-                            error instanceof Error ? error.stack : undefined,
+                        message: errorMessage,
+                        stack: errorStack,
                     })
-                    setStepStatus(node.id, "failed")
+
+                    const completedAt = new Date().toISOString()
+                    const durationMs = Date.now() - stepStartTime
+
+                    setStepStatus(node.id, "failed", {
+                        completedAt,
+                        finishedAt: completedAt,
+                        durationMs,
+                        error: errorMessage,
+                        errorStack,
+                    })
                     await metadata.flush()
                     throw error
                 }

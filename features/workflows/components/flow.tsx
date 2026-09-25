@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/resizable"
 
 import { RightSidebar } from "./right-sidebar"
-import { RunFeedback } from "./run-feedback"
+import { ConsolePanel } from "./console-panel"
 import { Canvas, initialEdges, initialNodes } from "./workflow-canvas"
 import { LiveblocksFlowProvider } from "./liveblocks-flow-context"
 import { useWorkflowId } from "./workflow-shell"
@@ -59,29 +59,8 @@ export function Flow() {
               />
             </ResizablePanel>
             <ResizableHandle withHandle />
-            <ResizablePanel defaultSize="8rem" minSize="6rem">
-              <div className="flex size-full flex-col overflow-hidden">
-                <div className="border-b border-border/70 px-3 py-1.5">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    Logs
-                  </p>
-                </div>
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  {activeRun ? (
-                    <RunFeedback
-                      key={activeRun.runId}
-                      runId={activeRun.runId}
-                      publicAccessToken={activeRun.publicAccessToken}
-                    />
-                  ) : (
-                    <div className="flex size-full items-center justify-center">
-                      <p className="text-sm text-muted-foreground">
-                        Press Run to see live task feedback
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <ResizablePanel defaultSize="10rem" minSize="6rem">
+              <ConsolePanel />
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>

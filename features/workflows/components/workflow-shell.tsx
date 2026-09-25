@@ -25,3 +25,7 @@ export function useWorkflowId() {
   }
   return workflowId
 }
+
+export { ConsolePanel } from "./console-panel"
+export { LogsPanel } from "./logs-panel"
+export { InspectorPanel } from "./inspector-panel"
