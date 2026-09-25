@@ -9,8 +9,10 @@ import { actNode } from "@/features/workflows/nodes/act"
 import { agentNode } from "@/features/workflows/nodes/agent"
 import { extractNode } from "@/features/workflows/nodes/extract"
 import { observeNode } from "@/features/workflows/nodes/observe"
+import { sendEmailNode } from "@/features/workflows/nodes/send-email"
 
 export type NodeContext = {
+    nodeId?: string
     values: Record<string, string>
     getStagehand: () => Promise<Stagehand>
 }
@@ -28,4 +30,6 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         extractNode({ stagehand: await getStagehand(), instruction: values.instruction }),
     observe: async ({ values, getStagehand }) =>
         observeNode({ stagehand: await getStagehand(), instruction: values.instruction }),
+    "send-email": async ({ values, nodeId }) =>
+        sendEmailNode({ values, nodeId }),
 } satisfies Record<ActionNodeType, NodeExecutor>

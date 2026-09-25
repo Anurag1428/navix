@@ -2,7 +2,7 @@
 
 import { memo } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
-import { Loader2 } from "lucide-react"
+import { Check, Loader2, X } from "lucide-react"
 
 import {
   nodeRegistry,
@@ -24,7 +24,9 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
   // reattempting, or otherwise not finished). Otherwise a node can be
   // left stuck with a blue outline after the run has ended.
   const isRunning = stepStatus === "running" && isLive
+  const isDone = stepStatus === "done"
   const isFailed = stepStatus === "failed"
+  const isPending = stepStatus === "pending" && isLive
 
   // A trigger starts the flow and takes no input, so it has no target handle.
   const hasTarget = kind !== "trigger"
@@ -32,9 +34,11 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
   return (
     <div
       className={cn(
-        "min-w-50 max-w-80 rounded-(--radius) border-2 border-border bg-card text-card-foreground",
-        isRunning && "border-blue-500",
-        isFailed && "border-red-500",
+        "min-w-50 max-w-80 rounded-(--radius) border-2 border-border bg-card text-card-foreground transition-colors duration-200",
+        isPending && "opacity-75 border-dashed border-border/80",
+        isRunning && "border-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]",
+        isDone && "border-emerald-500",
+        isFailed && "border-destructive",
         selected && "ring-2 ring-ring ring-offset-2 ring-offset-background"
       )}
     >
@@ -51,16 +55,31 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
         <div
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md",
-            def.accent
+            isDone && "bg-emerald-500 text-white",
+            isRunning && "bg-blue-500 text-white",
+            isFailed && "bg-destructive text-destructive-foreground",
+            !isDone && !isRunning && !isFailed && def.accent
           )}
         >
           {isRunning ? (
             <Loader2 className="size-4 animate-spin" />
+          ) : isDone ? (
+            <Check className="size-4" />
+          ) : isFailed ? (
+            <X className="size-4" />
           ) : (
             <Icon className="size-4" />
           )}
         </div>
-        <span className="text-sm font-semibold">{title}</span>
+        <div className="flex flex-col min-w-0">
+          <span className="text-sm font-semibold truncate">{title}</span>
+          {isPending && (
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Pending</span>
+          )}
+          {isRunning && (
+            <span className="text-[10px] text-blue-500 font-medium">Running...</span>
+          )}
+        </div>
       </div>
 
           {fields.length > 0 && (
