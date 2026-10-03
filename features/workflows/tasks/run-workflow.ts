@@ -23,6 +23,11 @@ export type RunStep = {
     errorStack?: string
 }
 
+export type RunWorkflowOutput = {
+    steps: RunStep[]
+    sessionId?: string
+}
+
 // How many times to retry a single step before giving up. The step
 // is re-executed in-place; prior step outputs and the Browserbase
 // session are preserved across retries.
@@ -89,6 +94,7 @@ export const runWorkflowTask = task({
 
         let browser: Awaited<ReturnType<typeof browserbase.launch>> | undefined
         let stagehand: Stagehand | undefined
+        let sessionId: string | undefined
 
         const getStagehand = async (): Promise<Stagehand> => {
             if (stagehand) {
@@ -109,31 +115,39 @@ export const runWorkflowTask = task({
                     apiKey,
                     userMetadata: { stagehand: "true" },
                 })
+                sessionId = browser.sessionId
             } catch (error) {
-                // Stagehand v3 throws a generic BrowserbaseSessionError that
-                // hides the real SDK error. Unwrap any chained `cause` and any
-                // attached response payload so the trigger.dev log shows the
-                // actual HTTP status / message (e.g. 402 quota, 401 auth).
-                const cause = (error as { cause?: unknown } | undefined)
-                    ?.cause
-                const errorPayload =
-                    (error as { error?: unknown } | undefined)?.error
+                // Stagehand swallows the underlying API error and throws
+                // a generic BrowserbaseSessionError without the cause.
+                // Probe Browserbase SDK directly to get the real error (e.g. 402 quota, 401 auth).
+                let detailedMessage: string | undefined
+                try {
+                    const { Browserbase } = await import("@browserbasehq/sdk")
+                    const bb = new Browserbase({ apiKey })
+                    await bb.sessions.create({
+                        projectId: process.env.BROWSERBASE_PROJECT_ID,
+                    })
+                } catch (sdkError: any) {
+                    detailedMessage =
+                        sdkError?.message ||
+                        (sdkError?.error ? `${sdkError.error}: ${sdkError.message}` : undefined)
+                }
+
+                const finalError = detailedMessage
+                    ? new Error(`Browserbase session creation failed: ${detailedMessage}`)
+                    : error
+
                 logger.error("Browserbase session launch failed", {
                     message:
+                        finalError instanceof Error
+                            ? finalError.message
+                            : String(finalError),
+                    originalError:
                         error instanceof Error
                             ? error.message
                             : String(error),
-                    cause:
-                        cause instanceof Error
-                            ? cause.message
-                            : cause ?? undefined,
-                    payload: errorPayload ?? undefined,
-                    stack:
-                        error instanceof Error
-                            ? error.stack
-                            : undefined,
                 })
-                throw error
+                throw finalError
             }
 
             // Give the Browserbase browser to Stagehand.
@@ -288,6 +302,7 @@ export const runWorkflowTask = task({
 
             return {
                 steps,
+                sessionId,
             }
         } finally {
             // Stagehand does NOT own the Browserbase browser.

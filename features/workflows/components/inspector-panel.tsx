@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { AlertCircle, Check, Copy, Loader2, X } from "lucide-react"
+import { AlertCircle, Check, Copy, Film, Loader2, X } from "lucide-react"
 import prettyMs from "pretty-ms"
 
 import { Button } from "@/components/ui/button"
@@ -9,25 +9,30 @@ import { cn } from "@/lib/utils"
 import { NodeIcon } from "@/features/workflows/components/right-sidebar"
 import type { RunStep } from "@/features/workflows/components/workflow-runs-provider"
 import type { NodeType } from "@/features/workflows/nodes/node-registry"
+import { SessionReplay } from "@/features/workflows/components/session-replay"
 
 export type InspectorPanelProps = {
-  step: RunStep
+  /** Pass a step to show step output / error details. */
+  step?: RunStep
+  /** Pass a sessionId to show the session replay instead of step details. */
+  sessionId?: string
   onClose?: () => void
   className?: string
 }
 
 export function InspectorPanel({
   step,
+  sessionId,
   onClose,
   className,
 }: InspectorPanelProps) {
   const [copied, setCopied] = useState(false)
 
-  const hasOutput = step.output !== undefined
-  const hasError = !!step.error
+  const hasOutput = step !== undefined && step.output !== undefined
+  const hasError = step !== undefined && !!step.error
 
   const formattedOutput = useMemo(() => {
-    if (step.output === undefined) return ""
+    if (!step || step.output === undefined) return ""
     if (typeof step.output === "object" && step.output !== null) {
       try {
         return JSON.stringify(step.output, null, 2)
@@ -36,13 +41,64 @@ export function InspectorPanel({
       }
     }
     return String(step.output)
-  }, [step.output])
+  }, [step])
 
   const copyOutput = (text: string) => {
     navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+
+  // ── Replay mode ─────────────────────────────────────────────────────────
+  if (sessionId) {
+    return (
+      <div
+        className={cn(
+          "flex w-80 sm:w-96 min-h-0 shrink-0 flex-col overflow-hidden bg-card/40",
+          className
+        )}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border/70 bg-muted/30 px-3 py-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-violet-500/15 text-violet-500">
+              <Film className="size-3.5" />
+            </span>
+            <div className="min-w-0">
+              <h4 className="text-xs font-semibold truncate text-foreground">
+                Session Replay
+              </h4>
+              <p className="text-[10px] font-mono text-muted-foreground truncate" title={sessionId}>
+                {sessionId}
+              </p>
+            </div>
+          </div>
+          {onClose && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={onClose}
+              title="Close replay"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </Button>
+          )}
+        </div>
+
+        {/* Player */}
+        <div className="min-h-0 flex-1 p-3">
+          <SessionReplay
+            sessionId={sessionId}
+            className="rounded-md overflow-hidden"
+          />
+        </div>
+      </div>
+    )
+  }
+
+  // ── Step-inspect mode ────────────────────────────────────────────────────
+  if (!step) return null
 
   return (
     <div
