@@ -1,24 +1,30 @@
 "use client"
 
 import { useState } from "react"
-import { CheckCircle2, ChevronDown, ChevronRight, Clock, Loader2, XCircle } from "lucide-react"
+import { CheckCircle2, ChevronDown, ChevronRight, Clock, Film, Loader2, XCircle } from "lucide-react"
 import prettyMs from "pretty-ms"
 
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { NodeIcon } from "@/features/workflows/components/right-sidebar"
-import { useWorkflowRuns, type WorkflowRun, type RunStep } from "@/features/workflows/components/workflow-runs-provider"
+import { useWorkflowRuns, type WorkflowRun } from "@/features/workflows/components/workflow-runs-provider"
 import type { NodeType } from "@/features/workflows/nodes/node-registry"
+import type { ConsoleSelection } from "@/features/workflows/components/console-panel"
 
 export type LogsPanelProps = {
+  selection?: ConsoleSelection | null
+  /** @deprecated use selection */
   selectedStepId?: string | null
   onSelectStep?: (stepId: string, runId: string) => void
+  onSelectReplay?: (runId: string) => void
   className?: string
 }
 
 export function LogsPanel({
-  selectedStepId,
+  selection,
+  selectedStepId: legacySelectedStepId,
   onSelectStep,
+  onSelectReplay,
   className,
 }: LogsPanelProps) {
   const { workflowRuns } = useWorkflowRuns()
@@ -30,6 +36,16 @@ export function LogsPanel({
       [runId]: !prev[runId],
     }))
   }
+
+  // Resolve which step / run is selected — support both the new `selection`
+  // prop and the legacy `selectedStepId` prop for callers that haven't migrated.
+  const activeStepId =
+    selection?.kind === "step"
+      ? selection.stepId
+      : (legacySelectedStepId ?? null)
+
+  const activeReplayRunId =
+    selection?.kind === "replay" ? selection.runId : null
 
   if (workflowRuns.length === 0) {
     return (
@@ -48,6 +64,11 @@ export function LogsPanel({
       {workflowRuns.map((run, index) => {
         const isCollapsed = !!collapsedRuns[run.id]
         const runNumber = workflowRuns.length - index
+
+        // A Replay row is shown when the run has finished and has a sessionId.
+        const isFinished = !run.isLive
+        const hasReplay = isFinished && !!run.sessionId
+        const isReplaySelected = activeReplayRunId === run.id
 
         return (
           <div
@@ -96,7 +117,7 @@ export function LogsPanel({
               </div>
             </div>
 
-            {/* Steps List */}
+            {/* Steps List + Replay Row */}
             {!isCollapsed && (
               <div className="mt-1.5 space-y-1 pl-4 border-l-2 border-border/40 ml-2">
                 {run.steps.length === 0 ? (
@@ -105,7 +126,7 @@ export function LogsPanel({
                   </p>
                 ) : (
                   run.steps.map((step) => {
-                    const isSelected = selectedStepId === step.id
+                    const isSelected = activeStepId === step.id
                     const isRunning = step.status === "running"
                     const isFailed = step.status === "failed"
                     const isDone = step.status === "done"
@@ -125,15 +146,10 @@ export function LogsPanel({
                         }}
                         className={cn(
                           "group flex w-full cursor-pointer items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-xs transition-all select-none border",
-                          // Default / Done state
                           isDone && "border-transparent bg-background/50 hover:bg-muted/60 text-foreground",
-                          // Failed: turns red
                           isFailed && "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 font-medium",
-                          // Running: spins while it's running
                           isRunning && "border-blue-500/30 bg-blue-500/10 text-blue-500 font-medium",
-                          // Inactive: looks inactive if it never ran
                           isPending && "border-transparent opacity-40 text-muted-foreground/80 hover:opacity-70 bg-transparent",
-                          // Selected state: ring & highlight
                           isSelected && "ring-2 ring-primary ring-offset-1 ring-offset-background bg-accent text-accent-foreground font-semibold shadow-xs"
                         )}
                       >
@@ -171,7 +187,7 @@ export function LogsPanel({
                           )}
                         </div>
 
-                        {/* Step Right: Duration formatted with pretty-ms & status icon */}
+                        {/* Step Right: Duration & status icon */}
                         <div className="flex items-center gap-2 shrink-0 font-mono text-[11px]">
                           {step.durationMs !== undefined ? (
                             <span
@@ -199,6 +215,39 @@ export function LogsPanel({
                       </div>
                     )
                   })
+                )}
+
+                {/* Replay row — only shown for finished runs that have a recording */}
+                {hasReplay && (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelectReplay?.(run.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault()
+                        onSelectReplay?.(run.id)
+                      }
+                    }}
+                    className={cn(
+                      "group flex w-full cursor-pointer items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-xs transition-all select-none border",
+                      "border-transparent bg-background/50 hover:bg-muted/60 text-foreground",
+                      isReplaySelected &&
+                        "ring-2 ring-primary ring-offset-1 ring-offset-background bg-accent text-accent-foreground font-semibold shadow-xs"
+                    )}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-violet-500/15 text-violet-500">
+                        <Film className="size-3.5" />
+                      </span>
+                      <span className="truncate text-muted-foreground group-hover:text-foreground">
+                        Replay
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] text-muted-foreground truncate" title={run.sessionId}>
+                      {run.sessionId?.slice(0, 8)}
+                    </span>
+                  </div>
                 )}
               </div>
             )}

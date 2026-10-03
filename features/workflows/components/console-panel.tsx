@@ -13,26 +13,66 @@ import { useWorkflowRuns, type RunStep } from "@/features/workflows/components/w
 import { LogsPanel } from "./logs-panel"
 import { InspectorPanel } from "./inspector-panel"
 
+// Discriminated union — exactly one thing can be selected at a time.
+export type ConsoleSelection =
+  | { kind: "step"; stepId: string }
+  | { kind: "replay"; runId: string }
+
 export function ConsolePanel() {
   const { workflowRuns } = useWorkflowRuns()
-  const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
+  const [selection, setSelection] = useState<ConsoleSelection | null>(null)
 
-  // Clicking a step selects it, clicking again deselects
   const handleSelectStep = (stepId: string) => {
-    setSelectedStepId((prev) => (prev === stepId ? null : stepId))
+    setSelection((prev) =>
+      prev?.kind === "step" && prev.stepId === stepId
+        ? null
+        : { kind: "step", stepId }
+    )
   }
 
-  // Find the selected step across all workflow runs
+  const handleSelectReplay = (runId: string) => {
+    setSelection((prev) =>
+      prev?.kind === "replay" && prev.runId === runId
+        ? null
+        : { kind: "replay", runId }
+    )
+  }
+
+  const handleClose = () => setSelection(null)
+
+  // Resolve the selected step object when the selection is a step.
   const selectedStep = useMemo<RunStep | undefined>(() => {
-    if (!selectedStepId) return undefined
+    if (selection?.kind !== "step") return undefined
     for (const run of workflowRuns) {
-      const found = run.steps.find((s) => s.id === selectedStepId)
+      const found = run.steps.find((s) => s.id === selection.stepId)
       if (found) return found
     }
     return undefined
-  }, [selectedStepId, workflowRuns])
+  }, [selection, workflowRuns])
+
+  // Resolve the session id when the selection is a replay.
+  const selectedReplaySessionId = useMemo<string | undefined>(() => {
+    if (selection?.kind !== "replay") return undefined
+    return workflowRuns.find((r) => r.id === selection.runId)?.sessionId
+  }, [selection, workflowRuns])
 
   const isLive = workflowRuns.some((r) => r.isLive)
+  const hasPanelOpen = selection !== null && (selectedStep !== undefined || selectedReplaySessionId !== undefined)
+
+  // Label shown in the top bar.
+  const selectionLabel = useMemo(() => {
+    if (selection?.kind === "step" && selectedStep) {
+      return { prefix: "Inspecting", value: selectedStep.title }
+    }
+    if (selection?.kind === "replay") {
+      const run = workflowRuns.find((r) => r.id === selection.runId)
+      const label = run
+        ? `Run #${workflowRuns.length - workflowRuns.indexOf(run)}`
+        : "Run"
+      return { prefix: "Replaying", value: label }
+    }
+    return null
+  }, [selection, selectedStep, workflowRuns])
 
   return (
     <div className="flex size-full flex-col overflow-hidden bg-background">
@@ -57,16 +97,17 @@ export function ConsolePanel() {
           )}
         </div>
 
-        {selectedStep && (
+        {selectionLabel && (
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-muted-foreground">
-              Inspecting: <strong className="text-foreground">{selectedStep.title}</strong>
+              {selectionLabel.prefix}:{" "}
+              <strong className="text-foreground">{selectionLabel.value}</strong>
             </span>
             <Button
               variant="ghost"
               size="icon-xs"
-              onClick={() => setSelectedStepId(null)}
-              title="Deselect step"
+              onClick={handleClose}
+              title="Close panel"
               className="text-muted-foreground hover:text-foreground"
             >
               <X className="size-3" />
@@ -75,29 +116,31 @@ export function ConsolePanel() {
         )}
       </div>
 
-      {/* Main split area: Runs List (LogsPanel) + Step Inspector */}
+      {/* Main split area: Runs List (LogsPanel) + Inspector / Replay */}
       <ResizablePanelGroup
         orientation="horizontal"
         className="min-h-0 flex-1"
       >
         {/* Left side: Runs and Steps List */}
-        <ResizablePanel defaultSize={selectedStep ? 50 : 100} minSize={30}>
+        <ResizablePanel defaultSize={hasPanelOpen ? 50 : 100} minSize={30}>
           <div className="size-full overflow-y-auto p-2.5">
             <LogsPanel
-              selectedStepId={selectedStepId}
+              selection={selection}
               onSelectStep={handleSelectStep}
+              onSelectReplay={handleSelectReplay}
             />
           </div>
         </ResizablePanel>
 
-        {/* Right side: Selected Step Inspector */}
-        {selectedStep && (
+        {/* Right side: Step Inspector or Session Replay */}
+        {hasPanelOpen && (
           <>
             <ResizableHandle withHandle />
             <ResizablePanel defaultSize={50} minSize={25}>
               <InspectorPanel
-                step={selectedStep}
-                onClose={() => setSelectedStepId(null)}
+                step={selection?.kind === "step" ? selectedStep : undefined}
+                sessionId={selection?.kind === "replay" ? selectedReplaySessionId : undefined}
+                onClose={handleClose}
               />
             </ResizablePanel>
           </>
@@ -106,4 +149,3 @@ export function ConsolePanel() {
     </div>
   )
 }
-

@@ -35,6 +35,7 @@ export type WorkflowRun = {
     durationMs?: number
     error?: unknown
     steps: RunStep[]
+    sessionId?: string
     isLive: boolean
     raw: ReturnType<
         typeof useRealtimeRunsWithTag<typeof runWorkflowTask>
@@ -60,6 +61,11 @@ export type WorkflowRunsApi = {
             | ReturnType<typeof useRealtimeRunsWithTag<typeof runWorkflowTask>>["runs"][number]
             | string
     ) => RunStep[]
+    getRunSessionId: (
+        runOrId:
+            | ReturnType<typeof useRealtimeRunsWithTag<typeof runWorkflowTask>>["runs"][number]
+            | string
+    ) => string | undefined
     useLatestRunSteps: () => LatestRunSteps
 }
 
@@ -77,6 +83,32 @@ const FINISHED_STATUSES = new Set([
 export function isLiveStatus(status?: string): boolean {
     if (!status) return false
     return !FINISHED_STATUSES.has(status)
+}
+
+export function extractSessionId(run?: {
+    output?: unknown
+}): string | undefined {
+    if (!run?.output) return undefined
+
+    if (typeof run.output === "object" && run.output !== null) {
+        const output = run.output as { sessionId?: unknown }
+        if (typeof output.sessionId === "string" && output.sessionId.length > 0) {
+            return output.sessionId
+        }
+    }
+
+    if (typeof run.output === "string") {
+        try {
+            const parsed = JSON.parse(run.output)
+            if (parsed && typeof parsed.sessionId === "string" && parsed.sessionId.length > 0) {
+                return parsed.sessionId
+            }
+        } catch {
+            // Ignore parse errors
+        }
+    }
+
+    return undefined
 }
 
 export function extractRunSteps(run?: {
@@ -164,6 +196,7 @@ export function WorkflowRunsProvider({
             const isTargetLive = liveRun && liveRun.id === run.id
             const currentRun = isTargetLive ? liveRun : run
             const steps = extractRunSteps(currentRun)
+            const sessionId = extractSessionId(currentRun) ?? extractSessionId(run)
             return {
                 id: run.id,
                 status: currentRun.status ?? run.status,
@@ -173,6 +206,7 @@ export function WorkflowRunsProvider({
                 durationMs: currentRun.durationMs ?? run.durationMs,
                 error: currentRun.error ?? run.error,
                 steps,
+                sessionId,
                 isLive: isLiveStatus(currentRun.status ?? run.status),
                 raw: run as ReturnType<typeof useRealtimeRunsWithTag<typeof runWorkflowTask>>["runs"][number],
             }
@@ -216,6 +250,26 @@ export function WorkflowRunsProvider({
         [workflowRuns, runs, liveRun],
     )
 
+    const getRunSessionId = useCallback(
+        (
+            runOrId:
+                | ReturnType<typeof useRealtimeRunsWithTag<typeof runWorkflowTask>>["runs"][number]
+                | string,
+        ): string | undefined => {
+            if (typeof runOrId === "string") {
+                const found = workflowRuns.find((r) => r.id === runOrId)
+                if (found) return found.sessionId
+                const rawFound = runs.find((r) => r.id === runOrId)
+                return extractSessionId(rawFound)
+            }
+            if (liveRun && liveRun.id === runOrId.id) {
+                return extractSessionId(liveRun) ?? extractSessionId(runOrId)
+            }
+            return extractSessionId(runOrId)
+        },
+        [workflowRuns, runs, liveRun],
+    )
+
     const useLatestRunSteps = useCallback((): LatestRunSteps => {
         const currentRun = activeRun
             ? (liveRun?.id === activeRun.runId ? liveRun : undefined)
@@ -248,6 +302,7 @@ export function WorkflowRunsProvider({
             setSelectedStepId,
             selectedStep,
             getRunSteps,
+            getRunSessionId,
             useLatestRunSteps,
         }
     }, [
@@ -260,6 +315,7 @@ export function WorkflowRunsProvider({
         selectedStepId,
         selectedStep,
         getRunSteps,
+        getRunSessionId,
         useLatestRunSteps,
     ])
 
