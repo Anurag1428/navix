@@ -2,13 +2,14 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "trigger": {
-      "command": [
-        "npx",
-        "trigger.dev@4.6.3",
-        "mcp"
-      ],
+      "command": ["npx", "trigger.dev@4.6.3", "mcp"],
       "enabled": true,
       "type": "local"
+    },
+    "Sentry": {
+      "type": "remote",
+      "url": "https://mcp.sentry.dev/mcp/individual-wrs/navix",
+      "oauth": {}
     }
   }
 }

@@ -1,11 +1,12 @@
 {
   "servers": {
     "trigger": {
-      "args": [
-        "trigger.dev@4.6.3",
-        "mcp"
-      ],
+      "args": ["trigger.dev@4.6.3", "mcp"],
       "command": "npx"
+    },
+    "Sentry": {
+      "url": "https://mcp.sentry.dev/mcp/individual-wrs/navix",
+      "type": "http"
     }
   }
 }
