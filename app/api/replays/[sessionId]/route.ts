@@ -24,6 +24,15 @@ export async function GET(
     })
   }
 
+  import("@sentry/nextjs").then((Sentry) => {
+    Sentry.getIsolationScope().setAttributes({
+      action: "getReplay",
+      orgId,
+      sessionId,
+    })
+    Sentry.logger.info("Replay requested", { sessionId })
+  })
+
   const pageId = request.nextUrl.searchParams.get("pageId")
   const bb = new Browserbase({ apiKey })
 
@@ -55,14 +64,18 @@ export async function GET(
   } catch (error: unknown) {
     // Pass through status codes from Browserbase (e.g. 404 for not-ready, 429 for rate limits)
     const err = error as
-      | { status?: number; statusCode?: number; message?: string }
-      | undefined
+      { status?: number; statusCode?: number; message?: string } | undefined
     const status =
       typeof err?.status === "number"
         ? err.status
         : typeof err?.statusCode === "number"
           ? err.statusCode
           : 500
+
+    if (status >= 500) {
+      import("@sentry/nextjs").then((Sentry) => Sentry.captureException(error))
+    }
+
     const message =
       err?.message || (error instanceof Error ? error.message : "Replay error")
 

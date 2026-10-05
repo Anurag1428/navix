@@ -12,6 +12,13 @@ export async function POST(req: Request) {
     return new Response("Unauthorized", { status: 401 })
   }
 
+  import("@sentry/nextjs").then((Sentry) => {
+    Sentry.getIsolationScope().setAttributes({
+      action: "liveblocksUsers",
+      orgId,
+    })
+  })
+
   let body: RequestBody
   try {
     body = await req.json()
@@ -26,7 +33,11 @@ export async function POST(req: Request) {
   }
 
   const uniqueUserIds = Array.from(
-    new Set(userIds.filter((id): id is string => typeof id === "string" && id.length > 0))
+    new Set(
+      userIds.filter(
+        (id): id is string => typeof id === "string" && id.length > 0
+      )
+    )
   )
 
   if (uniqueUserIds.length === 0) {
@@ -51,7 +62,10 @@ export async function POST(req: Request) {
     )
   )
 
-  const userMap = new Map<string, { name: string; avatar?: string; color?: string }>()
+  const userMap = new Map<
+    string,
+    { name: string; avatar?: string; color?: string }
+  >()
 
   for (const response of userResponses) {
     for (const user of response.data) {
