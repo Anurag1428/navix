@@ -150,11 +150,35 @@ export const runWorkflowTask = task({
                 throw finalError
             }
 
+            // ── Model routing ──────────────────────────────────────────────
+            // Prefer GROQ (free, high limits, no Browserbase AI gateway needed).
+            // Fall back to Google Gemini if GROQ key is missing.
+            const groqApiKey = process.env.GROQ_API_KEY
+            const geminiApiKey =
+                process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+
+            let modelName: string
+            let modelApiKey: string | undefined
+
+            if (groqApiKey) {
+                modelName = process.env.STAGEHAND_MODEL || "groq/openai/gpt-oss-120b"
+                modelApiKey = groqApiKey
+            } else if (geminiApiKey) {
+                modelName = process.env.STAGEHAND_MODEL || "google/gemini-flash-2.0"
+                modelApiKey = geminiApiKey
+            } else {
+                throw new Error(
+                    "No AI model API key found. Set GROQ_API_KEY or GEMINI_API_KEY in your environment."
+                )
+            }
+
             // Give the Browserbase browser to Stagehand.
             stagehand = await Stagehand.create({
                 browser,
                 model: {
-                    modelName: "google/gemini-2.5-flash",
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    modelName: modelName as any,
+                    apiKey: modelApiKey,
                 },
             })
 

@@ -62,6 +62,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@sentry/esbuild-plugin": "^5.4.0",
     "@tailwindcss/postcss": "^4",
     "@trigger.dev/build": "4.7.2",
     "@types/node": "^20",

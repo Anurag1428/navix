@@ -5,8 +5,8 @@ const MAX_STEPS = 20
 
 const PlannerDecisionSchema = z.object({
     action: z.enum(["act", "done"]),
-    instruction: z.string().optional(),
-    message: z.string().optional(),
+    instruction: z.string(),
+    message: z.string(),
 })
 
 type HistoryEntry = {
