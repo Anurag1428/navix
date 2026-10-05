@@ -13,6 +13,14 @@ export async function POST() {
   const clerk = await clerkClient()
   const user = await clerk.users.getUser(userId)
 
+  import("@sentry/nextjs").then((Sentry) => {
+    Sentry.getIsolationScope().setAttributes({
+      action: "liveblocksAuth",
+      orgId,
+    })
+    Sentry.logger.info("Liveblocks auth requested", { userId, orgId })
+  })
+
   const { status, body } = await liveblocks.identifyUser(
     {
       userId,

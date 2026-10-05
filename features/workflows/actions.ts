@@ -16,7 +16,18 @@ export async function createWorkflowAction(name: string) {
   const { orgId } = await auth()
   if (!orgId) throw new Error("No active organization")
 
+  import("@sentry/nextjs").then((Sentry) => {
+    Sentry.getIsolationScope().setAttributes({
+      action: "createWorkflowAction",
+      orgId,
+    })
+  })
+
   const [workflow] = await createWorkflow(orgId, name)
+
+  import("@sentry/nextjs").then((Sentry) => {
+    Sentry.logger.info("Workflow created", { workflowId: workflow.id, orgId })
+  })
   revalidatePath("/workflows", "layout")
   redirect(`/workflows/${workflow.id}`)
 }
@@ -30,15 +41,15 @@ export async function runWorkflowAction({
 }) {
   const { orgId } = await auth()
   if (!orgId) throw new Error("No active organization")
-  
-await saveWorkflowGraph({ orgId, id, graph })
+
+  await saveWorkflowGraph({ orgId, id, graph })
 
   const handle = await tasks.trigger<typeof runWorkflowTask>(
     "run-workflow",
     { workflowId: id, orgId },
     { tags: [`workflow:${id}`] }
   )
-  
+
   return {
     runId: handle.id,
     publicAccessToken: handle.publicAccessToken,
@@ -48,6 +59,14 @@ await saveWorkflowGraph({ orgId, id, graph })
 export async function deleteWorkflowAction(workflowId: string) {
   const { orgId } = await auth()
   if (!orgId) throw new Error("No active organization")
+
+  import("@sentry/nextjs").then((Sentry) => {
+    Sentry.getIsolationScope().setAttributes({
+      action: "deleteWorkflowAction",
+      orgId,
+      workflowId,
+    })
+  })
 
   const [deleted] = await deleteWorkflow(orgId, workflowId)
   if (!deleted) throw new Error("Workflow not found")
@@ -61,5 +80,5 @@ export async function deleteWorkflowAction(workflowId: string) {
 export async function cancelWorkflowRunAction(runId: string) {
   const { orgId } = await auth()
   if (!orgId) throw new Error("No active organization")
-    await runs.cancel(runId)
+  await runs.cancel(runId)
 }
