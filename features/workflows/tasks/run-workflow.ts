@@ -101,21 +101,92 @@ export const runWorkflowTask = task({
                 return stagehand
             }
 
-            const apiKey = process.env.BROWSERBASE_API_KEY
+            // ── Model routing (shared by both local and cloud paths) ──────────
+            const groqApiKey = process.env.GROQ_API_KEY
+            const geminiApiKey =
+                process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
 
-            if (!apiKey) {
+            let modelName: string
+            let modelApiKey: string | undefined
+
+            if (groqApiKey) {
+                modelName = process.env.STAGEHAND_MODEL || "groq/openai/gpt-oss-120b"
+                modelApiKey = groqApiKey
+            } else if (geminiApiKey) {
+                modelName = process.env.STAGEHAND_MODEL || "google/gemini-flash-2.0"
+                modelApiKey = geminiApiKey
+            } else {
                 throw new Error(
-                    "BROWSERBASE_API_KEY is not set"
+                    "No AI model API key found. Set GROQ_API_KEY or GEMINI_API_KEY in your environment."
                 )
             }
 
-            // Create the Browserbase browser first.
-            try {
-                browser = await browserbase.launch({
-                    apiKey,
-                    userMetadata: { stagehand: "true" },
+            // ── Browser routing ───────────────────────────────────────────────
+            // Set USE_LOCAL_BROWSER=true in .env.local to run on your own machine
+            // for free (unlimited, visible Chrome window). Leave unset to use
+            // Browserbase cloud sessions.
+            const useLocal = process.env.USE_LOCAL_BROWSER === "true"
+
+            if (useLocal) {
+                // ── LOCAL PATH: opens a visible Chrome window on your machine ──
+                logger.info("Using local browser (USE_LOCAL_BROWSER=true)")
+                const { localBrowser } = await import("@browserbasehq/stagehand")
+                const path = await import("path")
+                const fs = await import("fs")
+                // Store browser cookies/session in a local folder so you stay
+                // logged in between runs — the local equivalent of Browserbase Contexts.
+                const profileDir = path.resolve(process.cwd(), ".local-browser-profile")
+                // chrome-launcher requires the directory to exist before launch
+                fs.mkdirSync(profileDir, { recursive: true })
+                const localBrowserInstance = await localBrowser.launch({
+                    headless: false, // Visible window so you can watch it run
+                    userDataDir: profileDir,
+                    preserveUserDataDir: true, // Keep cookies after browser closes
                 })
-                sessionId = browser.sessionId
+                stagehand = await Stagehand.create({
+                    browser: localBrowserInstance,
+                    model: {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        modelName: modelName as any,
+                        apiKey: modelApiKey,
+                    },
+                })
+                return stagehand
+            }
+
+            // ── CLOUD PATH: Browserbase ───────────────────────────────────────
+            const apiKey = process.env.BROWSERBASE_API_KEY
+            if (!apiKey) {
+                throw new Error("BROWSERBASE_API_KEY is not set")
+            }
+
+            try {
+                if (process.env.BROWSERBASE_CONTEXT_ID) {
+                    // Create the session manually to guarantee the Context attaches
+                    const { Browserbase } = await import("@browserbasehq/sdk")
+                    const bb = new Browserbase({ apiKey })
+
+                    const session = await bb.sessions.create({
+                        projectId: process.env.BROWSERBASE_PROJECT_ID,
+                        browserSettings: {
+                            context: {
+                                id: process.env.BROWSERBASE_CONTEXT_ID,
+                                persist: true,
+                            },
+                        },
+                        userMetadata: { stagehand: "true" },
+                    })
+
+                    sessionId = session.id
+                    browser = await browserbase.connect({ apiKey, sessionId: session.id })
+                } else {
+                    // Fall back to standard launch if no Context is configured
+                    browser = await browserbase.launch({
+                        apiKey,
+                        userMetadata: { stagehand: "true" },
+                    })
+                    sessionId = browser.sessionId
+                }
             } catch (error) {
                 // Stagehand swallows the underlying API error and throws
                 // a generic BrowserbaseSessionError without the cause.
@@ -148,28 +219,6 @@ export const runWorkflowTask = task({
                             : String(error),
                 })
                 throw finalError
-            }
-
-            // ── Model routing ──────────────────────────────────────────────
-            // Prefer GROQ (free, high limits, no Browserbase AI gateway needed).
-            // Fall back to Google Gemini if GROQ key is missing.
-            const groqApiKey = process.env.GROQ_API_KEY
-            const geminiApiKey =
-                process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
-
-            let modelName: string
-            let modelApiKey: string | undefined
-
-            if (groqApiKey) {
-                modelName = process.env.STAGEHAND_MODEL || "groq/openai/gpt-oss-120b"
-                modelApiKey = groqApiKey
-            } else if (geminiApiKey) {
-                modelName = process.env.STAGEHAND_MODEL || "google/gemini-flash-2.0"
-                modelApiKey = geminiApiKey
-            } else {
-                throw new Error(
-                    "No AI model API key found. Set GROQ_API_KEY or GEMINI_API_KEY in your environment."
-                )
             }
 
             // Give the Browserbase browser to Stagehand.

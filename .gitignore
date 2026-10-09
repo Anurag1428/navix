@@ -41,3 +41,6 @@ next-env.d.ts
 .trigger
 # Sentry Config File
 .env.sentry-build-plugin
+
+# Local browser session profile (cookies, login state)
+.local-browser-profile/
