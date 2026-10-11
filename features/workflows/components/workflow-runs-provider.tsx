@@ -37,6 +37,7 @@ export type WorkflowRun = {
     steps: RunStep[]
     sessionId?: string
     isLive: boolean
+    metadata?: Record<string, unknown>
     raw: ReturnType<
         typeof useRealtimeRunsWithTag<typeof runWorkflowTask>
     >["runs"][number]
@@ -208,6 +209,7 @@ export function WorkflowRunsProvider({
                 steps,
                 sessionId,
                 isLive: isLiveStatus(currentRun.status ?? run.status),
+                metadata: (currentRun as any)?.metadata as Record<string, unknown> | undefined,
                 raw: run as ReturnType<typeof useRealtimeRunsWithTag<typeof runWorkflowTask>>["runs"][number],
             }
         })

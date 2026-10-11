@@ -1,7 +1,7 @@
 "use server"
 
 import { auth } from "@clerk/nextjs/server"
-import { runs, tasks } from "@trigger.dev/sdk"
+import { runs, tasks, wait } from "@trigger.dev/sdk"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 
@@ -81,4 +81,10 @@ export async function cancelWorkflowRunAction(runId: string) {
   const { orgId } = await auth()
   if (!orgId) throw new Error("No active organization")
   await runs.cancel(runId)
+}
+
+export async function completeHumanActionTokenAction(tokenId: string) {
+  const { orgId } = await auth()
+  if (!orgId) throw new Error("No active organization")
+  await wait.completeToken(tokenId, { resolved: true })
 }

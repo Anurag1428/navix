@@ -44,3 +44,6 @@ next-env.d.ts
 
 # Local browser session profile (cookies, login state)
 .local-browser-profile/
+.local-browser-profiles/
+.profiles/
+.local-recordings/
