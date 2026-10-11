@@ -4,6 +4,7 @@ import { browserbase, Stagehand } from "@browserbasehq/stagehand"
 
 import { nodeExecutors } from "@/features/workflows/nodes/node-executors"
 import { getWorkflow } from "@/features/workflows/data"
+import { listConnectedAccounts } from "@/features/accounts/data"
 import { interpolate } from "@/features/workflows/lib/interpolate"
 import { nodeRegistry, type NodeType } from "@/features/workflows/nodes/node-registry"
 
@@ -109,11 +110,19 @@ export const runWorkflowTask = task({
             let modelName: string
             let modelApiKey: string | undefined
 
-            if (groqApiKey) {
-                modelName = process.env.STAGEHAND_MODEL || "groq/openai/gpt-oss-120b"
+            const requestedModel = process.env.STAGEHAND_MODEL
+
+            if (requestedModel?.startsWith("google/") && geminiApiKey) {
+                modelName = requestedModel
+                modelApiKey = geminiApiKey
+            } else if (requestedModel?.startsWith("groq/") && groqApiKey) {
+                modelName = requestedModel
+                modelApiKey = groqApiKey
+            } else if (groqApiKey) {
+                modelName = "groq/openai/gpt-oss-120b"
                 modelApiKey = groqApiKey
             } else if (geminiApiKey) {
-                modelName = process.env.STAGEHAND_MODEL || "google/gemini-flash-2.0"
+                modelName = "google/gemini-flash-lite-latest"
                 modelApiKey = geminiApiKey
             } else {
                 throw new Error(
@@ -133,9 +142,45 @@ export const runWorkflowTask = task({
                 const { localBrowser } = await import("@browserbasehq/stagehand")
                 const path = await import("path")
                 const fs = await import("fs")
-                // Store browser cookies/session in a local folder so you stay
-                // logged in between runs — the local equivalent of Browserbase Contexts.
-                const profileDir = path.resolve(process.cwd(), ".local-browser-profile")
+                // Resolve profile directory:
+                // Check if user has any connected accounts matching the workflow's target URL,
+                // or use the first connected account, or fall back to default profile.
+                let selectedProfile = ".local-browser-profile"
+                try {
+                    const accounts = await listConnectedAccounts(orgId)
+                    if (accounts.length > 0) {
+                        const openUrlNodes = nodes.filter(
+                            (n) => (n.data as any)?.type === "open-url"
+                        )
+                        const targetUrls = openUrlNodes
+                            .map((n) => String((n.data as any)?.values?.url || ""))
+                            .join(" ")
+                            .toLowerCase()
+
+                        const matched = accounts.find((acc) => {
+                            const plat = acc.platform.toLowerCase()
+                            return (
+                                targetUrls.includes(plat) ||
+                                (plat === "wellfound" && (targetUrls.includes("wellfound") || targetUrls.includes("angel.co"))) ||
+                                (plat === "linkedin" && targetUrls.includes("linkedin"))
+                            )
+                        })
+
+                        if (matched) {
+                            selectedProfile = matched.profileDir
+                            logger.info(`Using connected account profile: "${matched.name}" (${selectedProfile})`)
+                        } else if (accounts.length === 1) {
+                            selectedProfile = accounts[0].profileDir
+                            logger.info(`Using single connected account profile: "${accounts[0].name}" (${selectedProfile})`)
+                        }
+                    }
+                } catch (accErr) {
+                    logger.warn("Could not load connected accounts, using default profile", {
+                        error: String(accErr),
+                    })
+                }
+
+                const profileDir = path.resolve(process.cwd(), selectedProfile)
                 // chrome-launcher requires the directory to exist before launch
                 fs.mkdirSync(profileDir, { recursive: true })
                 const localBrowserInstance = await localBrowser.launch({

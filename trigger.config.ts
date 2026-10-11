@@ -4,6 +4,7 @@ import { sentryEsbuildPlugin } from "@sentry/esbuild-plugin";
 // Load env vars if they aren't loaded by default
 import { config } from "dotenv";
 config({ path: ".env.sentry-build-plugin" });
+import "./features/init";
 
 export default defineConfig({
   project: "proj_tehcuffkgcidyoyafhaz",
@@ -23,8 +24,7 @@ export default defineConfig({
       randomize: true,
     },
   },
-  // dirs: ["./src/trigger"],
-  dirs: ["features"],
+  dirs: ["./features/workflows/tasks"],
   build: {
     external: ["@browserbasehq/stagehand"],
     extensions: [

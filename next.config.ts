@@ -2,6 +2,7 @@ import { withSentryConfig } from "@sentry/nextjs/config"
 import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["@browserbasehq/stagehand", "chrome-launcher"],
   turbopack: {
     root: process.cwd(),
   },

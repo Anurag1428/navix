@@ -3,8 +3,10 @@ import { config } from "dotenv"
 
 config({ path: ".env.local" })
 
-if (!process.env.DATABASE_URL_UNPOOLED) {
-  throw new Error("DATABASE_URL_UNPOOLED is not set in .env.local")
+const dbUrl = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL
+
+if (!dbUrl) {
+  throw new Error("DATABASE_URL or DATABASE_URL_UNPOOLED is not set in .env.local")
 }
 
 export default defineConfig({
@@ -12,6 +14,6 @@ export default defineConfig({
   out: "./lib/db/migrations",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL_UNPOOLED,
+    url: dbUrl,
   },
 })

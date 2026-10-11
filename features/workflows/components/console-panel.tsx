@@ -12,6 +12,7 @@ import {
 import { useWorkflowRuns, type RunStep } from "@/features/workflows/components/workflow-runs-provider"
 import { LogsPanel } from "./logs-panel"
 import { InspectorPanel } from "./inspector-panel"
+import { HumanActionBanner } from "./human-action-banner"
 
 // Discriminated union — exactly one thing can be selected at a time.
 export type ConsoleSelection =
@@ -115,6 +116,7 @@ export function ConsolePanel() {
           </div>
         )}
       </div>
+      <HumanActionBanner />
 
       {/* Main split area: Runs List (LogsPanel) + Inspector / Replay */}
       <ResizablePanelGroup

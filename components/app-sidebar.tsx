@@ -1,11 +1,20 @@
 import { auth } from "@clerk/nextjs/server"
 import { OrganizationSwitcher, UserButton } from "@clerk/nextjs"
 
+import Link from "next/link"
+import { Globe } from "lucide-react"
+
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
@@ -45,6 +54,21 @@ export async function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Platform</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu className="gap-1">
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild tooltip="Connected Accounts" className="h-10 rounded-lg">
+                  <Link href="/accounts">
+                    <Globe className="size-4" />
+                    <span>Connected Accounts</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
         <WorkflowNav workflows={workflows} createWorkflow={createWorkflowAction} />
       </SidebarContent>
 

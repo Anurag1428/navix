@@ -16,3 +16,18 @@ export const workflows = pgTable("workflows", {
 })
 
 export type Workflow = typeof workflows.$inferSelect
+
+export const connectedAccounts = pgTable("connected_accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: text("org_id").notNull(),
+  platform: text("platform").notNull(), // "wellfound" | "linkedin" | "custom"
+  name: text("name").notNull(), // User custom label, e.g. "My Wellfound", "Alina Parker"
+  profileDir: text("profile_dir").notNull(), // Relative path, e.g. ".local-browser-profiles/123"
+  loginUrl: text("login_url"), // Optional default login URL
+  status: text("status").notNull().default("connected"), // "connected" | "disconnected"
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type ConnectedAccount = typeof connectedAccounts.$inferSelect
+
