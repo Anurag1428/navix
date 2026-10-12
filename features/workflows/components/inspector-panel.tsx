@@ -1,7 +1,19 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { AlertCircle, Check, Copy, Film, Loader2, X } from "lucide-react"
+import {
+  AlertCircle,
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Copy,
+  Film,
+  HelpCircle,
+  Loader2,
+  ShieldAlert,
+  X,
+  XCircle,
+} from "lucide-react"
 import prettyMs from "pretty-ms"
 
 import { Button } from "@/components/ui/button"
@@ -193,10 +205,68 @@ export function InspectorPanel({
 
         {/* Output Section */}
         {hasOutput && (
-          <div className="space-y-1.5">
+          <div className="space-y-2">
+            {typeof step.output === "object" && step.output !== null && ("evidence" in (step.output as Record<string, unknown>) || "status" in (step.output as Record<string, unknown>) || "achieved" in (step.output as Record<string, unknown>)) && (() => {
+              const out = step.output as Record<string, unknown>
+              const status = typeof out.status === "string" ? out.status : (out.achieved === true ? "achieved" : out.achieved === false ? "not_achieved" : "unverified")
+
+              const isBlocked = status === "blocked"
+              const isNotAchieved = status === "not_achieved"
+              const isUnverified = status === "unverified"
+              const isAchieved = status === "achieved"
+
+              const badgeColor = isBlocked
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : isUnverified
+                  ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                  : isNotAchieved
+                    ? "border-destructive/30 bg-destructive/10 text-destructive"
+                    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+
+              const titleText = isBlocked
+                ? "Execution Blocked"
+                : isUnverified
+                  ? "Goal Unverified (Insufficient Evidence)"
+                  : isNotAchieved
+                    ? "Goal Not Achieved"
+                    : "Goal Verification Proof"
+
+              return (
+                <div className={cn("rounded-md border p-2.5 space-y-1.5 text-xs", badgeColor)}>
+                  <div className="flex items-center justify-between gap-1.5 font-semibold">
+                    <div className="flex items-center gap-1.5">
+                      {isBlocked && <AlertTriangle className="size-3.5 shrink-0" />}
+                      {isUnverified && <HelpCircle className="size-3.5 shrink-0" />}
+                      {isNotAchieved && <XCircle className="size-3.5 shrink-0" />}
+                      {isAchieved && <CheckCircle2 className="size-3.5 shrink-0" />}
+                      <span>{titleText}</span>
+                    </div>
+                    {typeof out.mode === "string" && (
+                      <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-current/30 opacity-80">
+                        {out.mode}
+                      </span>
+                    )}
+                  </div>
+                  {Boolean(out.summary) && (
+                    <p className="text-foreground/90 text-[11px] leading-relaxed">
+                      {String(out.summary)}
+                    </p>
+                  )}
+                  {Boolean(out.evidence) && (
+                    <div className="mt-1 rounded border border-border/40 bg-background/60 p-2 font-mono text-[10px] text-foreground/90 break-words">
+                      <span className="font-semibold block text-muted-foreground uppercase text-[9px] mb-0.5">
+                        Proof from page:
+                      </span>
+                      {String(out.evidence)}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-foreground">
-                Output
+                Raw Output
               </span>
               <Button
                 variant="ghost"

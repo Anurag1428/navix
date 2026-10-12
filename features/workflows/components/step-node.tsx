@@ -82,7 +82,7 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
         </div>
       </div>
 
-          {fields.length > 0 && (
+          {fields.length > 0 ? (
             <>
               <div className="border-t border-border" />
               <div className="flex flex-col gap-1.5 px-3 py-2.5">
@@ -99,7 +99,17 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
                 ))}
               </div>
             </>
-          )}
+          ) : type === "verify" ? (
+            <>
+              <div className="border-t border-border" />
+              <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+                <span className="text-muted-foreground">Mode</span>
+                <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                  Auto Verification
+                </span>
+              </div>
+            </>
+          ) : null}
 
       <Handle
         type="source"

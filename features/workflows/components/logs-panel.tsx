@@ -10,6 +10,7 @@ import { NodeIcon } from "@/features/workflows/components/right-sidebar"
 import { useWorkflowRuns, type WorkflowRun } from "@/features/workflows/components/workflow-runs-provider"
 import type { NodeType } from "@/features/workflows/nodes/node-registry"
 import type { ConsoleSelection } from "@/features/workflows/components/console-panel"
+import { GoalOutcomeCard } from "./goal-outcome-card"
 
 export type LogsPanelProps = {
   selection?: ConsoleSelection | null
@@ -117,10 +118,22 @@ export function LogsPanel({
               </div>
             </div>
 
+            {/* Goal Outcome Card */}
+            {isCollapsed && run.goalEvaluation && (
+              <div className="mt-1.5 px-1">
+                <GoalOutcomeCard run={run} compact />
+              </div>
+            )}
+
             {/* Steps List + Replay Row */}
             {!isCollapsed && (
-              <div className="mt-1.5 space-y-1 pl-4 border-l-2 border-border/40 ml-2">
-                {run.steps.length === 0 ? (
+              <div className="mt-2 space-y-2">
+                {run.goalEvaluation && (
+                  <GoalOutcomeCard run={run} />
+                )}
+
+                <div className="space-y-1 pl-4 border-l-2 border-border/40 ml-2">
+                  {run.steps.length === 0 ? (
                   <p className="py-1 text-xs italic text-muted-foreground/70">
                     {run.isLive ? "Initializing steps..." : "No steps recorded."}
                   </p>
@@ -247,8 +260,9 @@ export function LogsPanel({
                     <span className="font-mono text-[10px] text-muted-foreground truncate" title={run.sessionId}>
                       {run.sessionId?.startsWith("local_") ? "local" : run.sessionId?.slice(0, 8)}
                     </span>
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

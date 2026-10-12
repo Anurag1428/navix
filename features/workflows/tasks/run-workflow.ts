@@ -25,9 +25,26 @@ export type RunStep = {
     errorStack?: string
 }
 
+export type GoalEvaluationStatus =
+    | "achieved"
+    | "not_achieved"
+    | "unverified"
+    | "blocked"
+    | "failed"
+    | "unfulfilled"
+
+export type GoalEvaluation = {
+    achieved: boolean
+    status: GoalEvaluationStatus
+    goal?: string
+    summary?: string
+    evidence?: string
+}
+
 export type RunWorkflowOutput = {
     steps: RunStep[]
     sessionId?: string
+    goalEvaluation?: GoalEvaluation
 }
 
 // How many times to retry a single step before giving up. The step
@@ -406,6 +423,10 @@ export const runWorkflowTask = task({
                                     nodeId: node.id,
                                     values: resolvedValues,
                                     getStagehand,
+                                    outputs,
+                                    nodes,
+                                    edges,
+                                    steps,
                                 }),
                             {
                                 maxAttempts: STEP_MAX_ATTEMPTS,
@@ -455,14 +476,89 @@ export const runWorkflowTask = task({
                         error: errorMessage,
                         errorStack,
                     })
+
+                    const isBlockedError =
+                        errorMessage.toLowerCase().includes("captcha") ||
+                        errorMessage.toLowerCase().includes("turnstile") ||
+                        errorMessage.toLowerCase().includes("cloudflare") ||
+                        errorMessage.toLowerCase().includes("human intervention") ||
+                        errorMessage.toLowerCase().includes("security challenge") ||
+                        errorMessage.toLowerCase().includes("waitpoint")
+
+                    const failedGoalEvaluation: GoalEvaluation = {
+                        achieved: false,
+                        status: isBlockedError ? "blocked" : "not_achieved",
+                        goal: node.data.title,
+                        summary: `Step "${node.data.title}" failed: ${errorMessage}`,
+                        evidence: errorMessage,
+                    }
+                    metadata.set("goalEvaluation", failedGoalEvaluation as any)
                     await metadata.flush()
                     throw error
                 }
             }
 
+            // Derive overall goal evaluation from completed steps
+            const agentOrVerifyStep = steps
+                .slice()
+                .reverse()
+                .find(
+                    (s) =>
+                        (s.nodeType === "verify" || s.nodeType === "agent") &&
+                        s.status === "done" &&
+                        s.output !== undefined
+                )
+
+            let goalEvaluation: GoalEvaluation
+
+            if (
+                agentOrVerifyStep &&
+                typeof agentOrVerifyStep.output === "object" &&
+                agentOrVerifyStep.output !== null
+            ) {
+                const out = agentOrVerifyStep.output as any
+                const rawStatus = out.status as string | undefined
+                const resolvedStatus: GoalEvaluationStatus =
+                    rawStatus === "achieved" ||
+                    rawStatus === "not_achieved" ||
+                    rawStatus === "unverified" ||
+                    rawStatus === "blocked"
+                        ? rawStatus
+                        : (out.achieved ?? out.success ?? true)
+                          ? "achieved"
+                          : "not_achieved"
+
+                goalEvaluation = {
+                    achieved: resolvedStatus === "achieved",
+                    status: resolvedStatus,
+                    goal: out.criterion || agentOrVerifyStep.title,
+                    summary:
+                        out.summary ||
+                        out.message ||
+                        (resolvedStatus === "achieved"
+                            ? "Goal successfully verified."
+                            : resolvedStatus === "unverified"
+                              ? "Outcome unverified: insufficient evidence."
+                              : resolvedStatus === "blocked"
+                                ? "Execution blocked by security gate or human action."
+                                : "Goal was not achieved."),
+                    evidence: out.evidence,
+                }
+            } else {
+                goalEvaluation = {
+                    achieved: true,
+                    status: "achieved",
+                    summary: `All ${steps.length} workflow steps completed successfully.`,
+                }
+            }
+
+            metadata.set("goalEvaluation", goalEvaluation as any)
+            await metadata.flush()
+
             return {
                 steps,
                 sessionId,
+                goalEvaluation,
             }
         } finally {
             // Stagehand does NOT own the Browserbase or Playwright browser.

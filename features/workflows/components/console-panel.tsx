@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Terminal, X } from "lucide-react"
+import { AlertTriangle, CheckCircle2, HelpCircle, Terminal, X, XCircle } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -95,6 +95,41 @@ export function ConsolePanel() {
               </span>
               Running
             </span>
+          )}
+          {!isLive && workflowRuns[0]?.goalEvaluation && (
+            (() => {
+              const evalObj = workflowRuns[0].goalEvaluation
+              if (evalObj.status === "blocked") {
+                return (
+                  <span className="flex items-center gap-1 rounded-full bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                    <AlertTriangle className="size-2.5" />
+                    Blocked
+                  </span>
+                )
+              }
+              if (evalObj.status === "unverified") {
+                return (
+                  <span className="flex items-center gap-1 rounded-full bg-yellow-500/15 border border-yellow-500/30 px-1.5 py-0.5 text-[10px] text-yellow-600 dark:text-yellow-400 font-medium">
+                    <HelpCircle className="size-2.5" />
+                    Unverified
+                  </span>
+                )
+              }
+              if (evalObj.achieved) {
+                return (
+                  <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    <CheckCircle2 className="size-2.5" />
+                    Goal Achieved
+                  </span>
+                )
+              }
+              return (
+                <span className="flex items-center gap-1 rounded-full bg-destructive/15 border border-destructive/30 px-1.5 py-0.5 text-[10px] text-destructive font-medium">
+                  <XCircle className="size-2.5" />
+                  Not Achieved
+                </span>
+              )
+            })()
           )}
         </div>
 
