@@ -26,7 +26,7 @@ export default defineConfig({
   },
   dirs: ["./features/workflows/tasks"],
   build: {
-    external: ["@browserbasehq/stagehand"],
+    external: ["@browserbasehq/stagehand", "playwright"],
     extensions: [
       esbuildPlugin(
         sentryEsbuildPlugin({

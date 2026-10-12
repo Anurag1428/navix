@@ -1,6 +1,7 @@
 import toposort from "toposort"
 import { logger, metadata, task } from "@trigger.dev/sdk"
 import { browserbase, Stagehand } from "@browserbasehq/stagehand"
+import type { BrowserContext as PlaywrightContext } from "playwright"
 
 import { nodeExecutors } from "@/features/workflows/nodes/node-executors"
 import { getWorkflow } from "@/features/workflows/data"
@@ -39,13 +40,17 @@ const STEP_RETRY_MAX_TIMEOUT_MS = 10_000
 export const runWorkflowTask = task({
     id: "run-workflow",
 
-    run: async ({
-        workflowId,
-        orgId,
-    }: {
-        workflowId: string
-        orgId: string
-    }) => {
+    run: async (
+        {
+            workflowId,
+            orgId,
+        }: {
+            workflowId: string
+            orgId: string
+        },
+        { ctx }
+    ) => {
+        const runId = ctx?.run?.id ?? `local_${Date.now()}`
         const workflow = await getWorkflow(orgId, workflowId)
 
         if (!workflow?.graph) {
@@ -96,6 +101,8 @@ export const runWorkflowTask = task({
         let browser: Awaited<ReturnType<typeof browserbase.launch>> | undefined
         let stagehand: Stagehand | undefined
         let sessionId: string | undefined
+        let localPlaywrightContext: PlaywrightContext | undefined
+        let localRecordingsDir: string | undefined
 
         const getStagehand = async (): Promise<Stagehand> => {
             if (stagehand) {
@@ -137,9 +144,11 @@ export const runWorkflowTask = task({
             const useLocal = process.env.USE_LOCAL_BROWSER === "true"
 
             if (useLocal) {
-                // ── LOCAL PATH: opens a visible Chrome window on your machine ──
+                // ── LOCAL PATH: opens Chrome with Playwright video recording + Stagehand ──
                 logger.info("Using local browser (USE_LOCAL_BROWSER=true)")
+                const { chromium } = await import("playwright")
                 const { localBrowser } = await import("@browserbasehq/stagehand")
+                const { getAvailablePort } = await import("@/features/workflows/lib/ports")
                 const path = await import("path")
                 const fs = await import("fs")
                 // Resolve profile directory:
@@ -181,21 +190,54 @@ export const runWorkflowTask = task({
                 }
 
                 const profileDir = path.resolve(process.cwd(), selectedProfile)
-                // chrome-launcher requires the directory to exist before launch
                 fs.mkdirSync(profileDir, { recursive: true })
-                const localBrowserInstance = await localBrowser.launch({
-                    headless: false, // Visible window so you can watch it run
-                    userDataDir: profileDir,
-                    preserveUserDataDir: true, // Keep cookies after browser closes
+
+                localRecordingsDir = path.resolve(process.cwd(), ".local-recordings")
+                fs.mkdirSync(localRecordingsDir, { recursive: true })
+
+                const port = await getAvailablePort()
+                logger.info(`Launching local browser on port ${port} with video recording`)
+
+                localPlaywrightContext = await chromium.launchPersistentContext(profileDir, {
+                    channel: "chrome",
+                    headless: false,
+                    ignoreDefaultArgs: ["--disable-extensions"],
+                    recordVideo: {
+                        dir: localRecordingsDir,
+                        size: { width: 1280, height: 720 },
+                    },
+                    args: [
+                        `--remote-debugging-port=${port}`,
+                        "--enable-unsafe-extension-debugging",
+                        "--remote-allow-origins=*",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                    ],
                 })
+
+                try {
+                    await localPlaywrightContext.tracing.start({
+                        screenshots: true,
+                        snapshots: true,
+                        sources: true,
+                    })
+                } catch (traceErr) {
+                    logger.warn("Failed to start tracing", { error: String(traceErr) })
+                }
+
+                const stagehandBrowser = await localBrowser.connect({
+                    cdpUrl: `http://127.0.0.1:${port}`,
+                })
+
                 stagehand = await Stagehand.create({
-                    browser: localBrowserInstance,
+                    browser: stagehandBrowser,
                     model: {
                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         modelName: modelName as any,
                         apiKey: modelApiKey,
                     },
                 })
+                sessionId = `local_${runId}`
                 return stagehand
             }
 
@@ -423,8 +465,8 @@ export const runWorkflowTask = task({
                 sessionId,
             }
         } finally {
-            // Stagehand does NOT own the Browserbase browser.
-            // Close Stagehand first, then the browser.
+            // Stagehand does NOT own the Browserbase or Playwright browser.
+            // Close Stagehand first, then the browser / Playwright context.
             // Safely catch cleanup errors so socket teardowns do not mark successful runs as failed.
             try {
                 await stagehand?.close()
@@ -445,6 +487,66 @@ export const runWorkflowTask = task({
                             ? closeError.message
                             : String(closeError),
                 })
+            }
+
+            if (localPlaywrightContext) {
+                try {
+                    const fs = await import("fs")
+                    const path = await import("path")
+
+                    // 1. Save trace file as insurance policy
+                    if (localRecordingsDir) {
+                        const traceFile = path.join(localRecordingsDir, `${runId}-trace.zip`)
+                        try {
+                            await localPlaywrightContext.tracing.stop({ path: traceFile })
+                            logger.info(`Saved local execution trace to ${traceFile}`)
+                        } catch (traceErr) {
+                            logger.warn("Failed to save local execution trace", { error: String(traceErr) })
+                        }
+                    }
+
+                    // 2. Obtain path to recorded video before closing context
+                    let videoPath: string | undefined
+                    for (const page of localPlaywrightContext.pages()) {
+                        try {
+                            const v = page.video()
+                            if (v) {
+                                videoPath = await v.path()
+                                break
+                            }
+                        } catch {
+                            // ignore
+                        }
+                    }
+
+                    // 3. Close Playwright context (this flushes the .webm video file to disk)
+                    await localPlaywrightContext.close()
+
+                    // 4. Rename the video to deterministic name: ${runId}.webm
+                    if (videoPath && fs.existsSync(videoPath) && localRecordingsDir) {
+                        const targetPath = path.join(localRecordingsDir, `${runId}.webm`)
+                        try {
+                            if (fs.existsSync(targetPath)) {
+                                fs.unlinkSync(targetPath)
+                            }
+                            fs.renameSync(videoPath, targetPath)
+                            logger.info(`Saved local video replay to ${targetPath}`)
+                        } catch (renameErr) {
+                            logger.warn("Failed to rename video replay file", {
+                                from: videoPath,
+                                to: targetPath,
+                                error: String(renameErr),
+                            })
+                        }
+                    }
+                } catch (pwCleanupErr) {
+                    logger.warn("Playwright context close warning", {
+                        message:
+                            pwCleanupErr instanceof Error
+                                ? pwCleanupErr.message
+                                : String(pwCleanupErr),
+                    })
+                }
             }
         }
     },
