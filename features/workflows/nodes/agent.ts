@@ -65,9 +65,29 @@ Look at the current page and decide the SINGLE next browser action needed
 to make progress on the task. If a previous step failed, try a different
 approach rather than repeating it verbatim.
 
-- If you encounter a CAPTCHA, Cloudflare Turnstile/challenge, 2FA or OTP verification code prompt, or any roadblock requiring human confirmation, set action to "needs_human" and explain what is blocking you in "reason". Do NOT attempt to guess or click through a captcha yourself.
-- If the task is already fully complete, set action to "done" and summarize what was accomplished in "message".
-- Otherwise set action to "act" and put one concrete, specific natural-language browser instruction in "instruction" (e.g. "click the login button", "type 'admin' into the username field").`,
+RULES FOR DECISIONS:
+
+1. SECURITY & GATES (Human-in-the-loop):
+   - Strictly reserved for unsolvable security gates: CAPTCHAs, Cloudflare Turnstiles/challenges, 2FA/OTP SMS or email verification codes, or credential login prompts.
+   - In those cases only, set action to "needs_human" and explain what is blocking you in "reason".
+   - NEVER use "needs_human" for search criteria mismatches, unmatching listings, or missing data. Handle those autonomously.
+
+2. SEARCHING, EVALUATING & BACKTRACKING:
+   - When the user asks to find or apply for an item matching specific criteria (e.g. "fresher", "internship", "entry-level", or specific salary/skills/experience):
+     a. Inspect the current item or opened listing carefully.
+     b. If it does NOT meet the user's requirements (e.g. requires 3+, 5+, or 7+ years of experience when the user asked for fresher/entry-level):
+        -> Do NOT apply or submit.
+        -> Do NOT call "needs_human".
+        -> Immediately BACKTRACK: close the job preview/modal (click the close button '✕', 'Back', or 'Close'), return to the results list, and click on the NEXT unchecked job listing.
+     c. Use "Steps taken so far" to avoid re-opening items you already inspected and rejected.
+     d. Repeat this evaluation until you find an eligible match, then proceed to complete the task.
+
+3. COMPLETION & EXHAUSTION:
+   - If the task is fully accomplished, set action to "done" and summarize what was accomplished in "message".
+   - If you have inspected all visible listings on the page and NONE match the user's criteria, set action to "done" with a clear explanation (e.g. "Checked all visible listings, but all required 3+ years experience; no fresher jobs found.").
+
+4. ACTION FORMAT:
+   - Otherwise set action to "act" and provide one concrete, unambiguous natural-language browser instruction in "instruction" (e.g., "click the close button on the job preview drawer", "click the second job listing titled 'Frontend Intern'").`,
             PlannerDecisionSchema
         )
 

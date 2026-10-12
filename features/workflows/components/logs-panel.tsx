@@ -245,7 +245,7 @@ export function LogsPanel({
                       </span>
                     </div>
                     <span className="font-mono text-[10px] text-muted-foreground truncate" title={run.sessionId}>
-                      {run.sessionId?.slice(0, 8)}
+                      {run.sessionId?.startsWith("local_") ? "local" : run.sessionId?.slice(0, 8)}
                     </span>
                   </div>
                 )}

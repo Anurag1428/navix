@@ -159,7 +159,7 @@ export function SessionReplay({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, replayUrl, maxPollAttempts, pollIntervalMs, pollKey])
 
-  // ── HLS playback effect ───────────────────────────────────────────────────
+  // ── Playback effect ───────────────────────────────────────────────────────
   useEffect(() => {
     if (status !== "ready" || !videoRef.current || !replayUrl) {
       return
@@ -168,6 +168,37 @@ export function SessionReplay({
     const video = videoRef.current
     video.muted = muted
 
+    // Local sessions stream a native .webm video directly
+    if (sessionId.startsWith("local_")) {
+      video.src = replayUrl
+
+      const handleLoaded = () => {
+        if (autoPlay) {
+          video.play().catch((e) => {
+            console.debug("Autoplay prevented:", e)
+          })
+        }
+        onReady?.()
+      }
+
+      const handleErr = () => {
+        const nativeErr = new Error("Failed to load local video replay.")
+        setStatus("error")
+        setErrorMessage(nativeErr.message)
+        onError?.(nativeErr)
+      }
+
+      video.addEventListener("loadedmetadata", handleLoaded)
+      video.addEventListener("error", handleErr)
+
+      return () => {
+        video.removeEventListener("loadedmetadata", handleLoaded)
+        video.removeEventListener("error", handleErr)
+        video.src = ""
+      }
+    }
+
+    // Cloud sessions use HLS (m3u8 playlist)
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
@@ -244,7 +275,7 @@ export function SessionReplay({
       setErrorMessage(unsupportedErr.message)
       onError?.(unsupportedErr)
     }
-  }, [status, replayUrl, autoPlay, muted, onReady, onError])
+  }, [status, sessionId, replayUrl, autoPlay, muted, onReady, onError])
 
   return (
     <div
