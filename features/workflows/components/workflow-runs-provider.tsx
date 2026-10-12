@@ -11,9 +11,9 @@ import {
 } from "react"
 import { useRealtimeRun, useRealtimeRunsWithTag } from "@trigger.dev/react-hooks"
 
-import type { runWorkflowTask, RunStep } from "@/features/workflows/tasks/run-workflow"
+import type { runWorkflowTask, RunStep, GoalEvaluation } from "@/features/workflows/tasks/run-workflow"
 
-export type { RunStep }
+export type { RunStep, GoalEvaluation }
 
 export type ActiveRun = {
     runId: string
@@ -38,6 +38,7 @@ export type WorkflowRun = {
     sessionId?: string
     isLive: boolean
     metadata?: Record<string, unknown>
+    goalEvaluation?: GoalEvaluation
     raw: ReturnType<
         typeof useRealtimeRunsWithTag<typeof runWorkflowTask>
     >["runs"][number]
@@ -131,6 +132,122 @@ export function extractRunSteps(run?: {
     return []
 }
 
+export function extractGoalEvaluation(run?: {
+    output?: unknown
+    metadata?: Record<string, unknown>
+    steps?: RunStep[]
+}): GoalEvaluation | undefined {
+    if (!run) return undefined
+
+    // 1. Direct from metadata
+    if (run.metadata?.goalEvaluation && typeof run.metadata.goalEvaluation === "object") {
+        const raw = run.metadata.goalEvaluation as any
+        const rawStatus = raw.status
+        const status =
+            rawStatus === "achieved" ||
+            rawStatus === "not_achieved" ||
+            rawStatus === "unverified" ||
+            rawStatus === "blocked"
+                ? rawStatus
+                : raw.achieved
+                  ? "achieved"
+                  : "not_achieved"
+
+        return {
+            achieved: status === "achieved",
+            status,
+            goal: raw.goal,
+            summary: raw.summary,
+            evidence: raw.evidence,
+        }
+    }
+
+    // 2. Direct from output
+    if (run.output && typeof run.output === "object") {
+        const outObj = run.output as { goalEvaluation?: GoalEvaluation }
+        if (outObj.goalEvaluation) {
+            const raw = outObj.goalEvaluation as any
+            const rawStatus = raw.status
+            const status =
+                rawStatus === "achieved" ||
+                rawStatus === "not_achieved" ||
+                rawStatus === "unverified" ||
+                rawStatus === "blocked"
+                    ? rawStatus
+                    : raw.achieved
+                      ? "achieved"
+                      : "not_achieved"
+
+            return {
+                achieved: status === "achieved",
+                status,
+                goal: raw.goal,
+                summary: raw.summary,
+                evidence: raw.evidence,
+            }
+        }
+    }
+
+    // 3. Fallback: inspect steps
+    const steps = extractRunSteps(run)
+    const failedStep = steps.find((s) => s.status === "failed")
+    if (failedStep) {
+        const errorMsg = failedStep.error || `Step "${failedStep.title}" failed.`
+        const isBlocked =
+            errorMsg.toLowerCase().includes("captcha") ||
+            errorMsg.toLowerCase().includes("turnstile") ||
+            errorMsg.toLowerCase().includes("cloudflare") ||
+            errorMsg.toLowerCase().includes("human intervention") ||
+            errorMsg.toLowerCase().includes("security challenge")
+
+        return {
+            achieved: false,
+            status: isBlocked ? "blocked" : "not_achieved",
+            goal: failedStep.title,
+            summary: errorMsg,
+            evidence: failedStep.error,
+        }
+    }
+
+    const verifyOrAgentStep = steps
+        .slice()
+        .reverse()
+        .find(
+            (s) =>
+                (s.nodeType === "verify" || s.nodeType === "agent") &&
+                s.status === "done" &&
+                s.output !== undefined
+        )
+
+    if (
+        verifyOrAgentStep &&
+        typeof verifyOrAgentStep.output === "object" &&
+        verifyOrAgentStep.output !== null
+    ) {
+        const out = verifyOrAgentStep.output as any
+        const rawStatus = out.status as string | undefined
+        const status =
+            rawStatus === "achieved" ||
+            rawStatus === "not_achieved" ||
+            rawStatus === "unverified" ||
+            rawStatus === "blocked"
+                ? rawStatus
+                : (out.achieved ?? out.success ?? true)
+                  ? "achieved"
+                  : "not_achieved"
+
+        return {
+            achieved: status === "achieved",
+            status,
+            goal: out.criterion || verifyOrAgentStep.title,
+            summary: out.summary || out.message,
+            evidence: out.evidence,
+        }
+    }
+
+    return undefined
+}
+
 export function WorkflowRunsProvider({
     workflowId,
     publicAccessToken,
@@ -198,6 +315,8 @@ export function WorkflowRunsProvider({
             const currentRun = isTargetLive ? liveRun : run
             const steps = extractRunSteps(currentRun)
             const sessionId = extractSessionId(currentRun) ?? extractSessionId(run)
+            const goalEvaluation =
+                extractGoalEvaluation(currentRun) ?? extractGoalEvaluation(run)
             return {
                 id: run.id,
                 status: currentRun.status ?? run.status,
@@ -210,6 +329,7 @@ export function WorkflowRunsProvider({
                 sessionId,
                 isLive: isLiveStatus(currentRun.status ?? run.status),
                 metadata: (currentRun as any)?.metadata as Record<string, unknown> | undefined,
+                goalEvaluation,
                 raw: run as ReturnType<typeof useRealtimeRunsWithTag<typeof runWorkflowTask>>["runs"][number],
             }
         })

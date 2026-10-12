@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react"
-import { Globe, Mail, MousePointerClick, ScanSearch, Search, type LucideIcon, Bot } from "lucide-react"
+import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot } from "lucide-react"
 import { Zap } from "lucide-react"
 
 export type StepNodeKind = "trigger" | "action"
@@ -11,6 +11,7 @@ export type NodeField = {
   placeholder?: string
   multiline?: boolean
   required?: boolean
+  description?: string
 }
 
 export type NodeOutput = {
@@ -104,11 +105,48 @@ export const nodeRegistry = {
     accent: "bg-pink-500 text-white",
     fields: [
       { key: "instruction", label: "Instruction", placeholder: "Search for the stock price of NVDA and summarize the results", multiline: true, required: true },
+      { key: "candidateProfile", label: "Candidate Profile", placeholder: "Skills, experience, and background for tailored applications...", multiline: true },
     ],
     outputs: [
       { path: "success", label: "Success" },
+      { path: "achieved", label: "Achieved" },
+      { path: "evidence", label: "Evidence" },
+      { path: "summary", label: "Summary" },
       { path: "message", label: "Message" },
       { path: "completed", label: "Completed" },
+      { path: "url", label: "URL" },
+    ],
+  },
+  verify: {
+    type: "verify",
+    kind: "action",
+    label: "Verify Goal",
+    icon: ShieldCheck,
+    accent: "bg-emerald-600 text-white",
+    fields: [
+      {
+        key: "criterion",
+        label: "Custom Criterion (Optional)",
+        placeholder: "Leave empty for Automatic Verification (infers goal from upstream Agent)",
+        multiline: true,
+        required: false,
+        description: "Automatic verification is enabled by default. Leave empty to auto-verify, or enter custom requirements.",
+      },
+      {
+        key: "expectedText",
+        label: "Expected Text (Optional)",
+        placeholder: "e.g. Thank you for your application",
+        multiline: false,
+        required: false,
+        description: "Optional literal string that must appear on the page.",
+      },
+    ],
+    outputs: [
+      { path: "achieved", label: "Achieved" },
+      { path: "status", label: "Status" },
+      { path: "mode", label: "Mode" },
+      { path: "evidence", label: "Evidence" },
+      { path: "summary", label: "Summary" },
       { path: "url", label: "URL" },
     ],
   },

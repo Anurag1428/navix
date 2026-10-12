@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState, useTransition } from "react"
-import { MoreHorizontal, Play, Trash2 } from "lucide-react"
+import { MoreHorizontal, Play, ShieldCheck, Trash2 } from "lucide-react"
 import { useReactFlow, useStore } from "@xyflow/react"
 import { toast } from "sonner"
 
@@ -212,6 +212,20 @@ function Inspector({ node }: { node: StepNodeType | undefined }) {
     return (
         <Section title={title} icon={<NodeIcon type={type} />}>
             <div className="flex flex-col gap-3 p-3">
+                {type === "verify" && (
+                    <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs space-y-1">
+                        <div className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                            <ShieldCheck className="size-3.5" />
+                            <span>Automatic Verification (Default)</span>
+                        </div>
+                        <p className="text-muted-foreground leading-relaxed text-[11px]">
+                            Requires no manual input. Navix automatically infers the goal from the upstream Agent task and audits page confirmation, URL state, or extracted results.
+                        </p>
+                        <p className="text-muted-foreground/80 text-[10px]">
+                            Optional: enter a custom criterion or expected text below to override automatic inference.
+                        </p>
+                    </div>
+                )}
                 {def.fields.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No properties</p>
                 ) : (
@@ -224,6 +238,11 @@ function Inspector({ node }: { node: StepNodeType | undefined }) {
                                     {field.label}
                                     {field.required && <span className="text-destructive">*</span>}
                                 </Label>
+                                {field.description && (
+                                    <p className="text-[11px] text-muted-foreground leading-normal">
+                                        {field.description}
+                                    </p>
+                                )}
                                 <Field
                                     field={field}
                                     value={raw}
