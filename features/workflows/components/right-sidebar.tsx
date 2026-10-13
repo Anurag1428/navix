@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState, useTransition } from "react"
-import { MoreHorizontal, Play, ShieldCheck, Trash2 } from "lucide-react"
+import { Database, MoreHorizontal, Play, ShieldCheck, Trash2 } from "lucide-react"
 import { useReactFlow, useStore } from "@xyflow/react"
 import { toast } from "sonner"
 
@@ -226,8 +226,67 @@ function Inspector({ node }: { node: StepNodeType | undefined }) {
                         </p>
                     </div>
                 )}
+                {type === "airtable" && (
+                    <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-2.5 text-xs space-y-1">
+                        <div className="flex items-center gap-1.5 font-semibold text-teal-600 dark:text-teal-400">
+                            <Database className="size-3.5" />
+                            <span>Automatic Tracking (Default)</span>
+                        </div>
+                        <p className="text-muted-foreground leading-relaxed text-[11px]">
+                            Requires zero manual configuration. Navix automatically saves discovered jobs and records confirmed applications directly from upstream Agent and Extract steps.
+                        </p>
+                        <p className="text-muted-foreground/80 text-[10px]">
+                            Optional: expand Advanced Settings below if you want to override specific fields or operations manually.
+                        </p>
+                    </div>
+                )}
                 {def.fields.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No properties</p>
+                ) : type === "airtable" ? (
+                    <Accordion type="single" collapsible className="w-full">
+                        <AccordionItem value="advanced" className="border-border">
+                            <AccordionTrigger className="text-xs font-medium py-2 text-muted-foreground hover:text-foreground">
+                                Advanced Settings & Field Overrides
+                            </AccordionTrigger>
+                            <AccordionContent className="pt-2 flex flex-col gap-3">
+                                {def.fields.map((field) => {
+                                    const raw = values[field.key] ?? ""
+                                    const preview = interpolate(raw, upstreamValues)
+                                    return (
+                                        <div key={field.key} className="flex flex-col gap-1.5">
+                                            <Label htmlFor={field.key} className="text-xs">
+                                                {field.label}
+                                                {field.required && <span className="text-destructive">*</span>}
+                                            </Label>
+                                            {field.description && (
+                                                <p className="text-[11px] text-muted-foreground leading-normal">
+                                                    {field.description}
+                                                </p>
+                                            )}
+                                            <Field
+                                                field={field}
+                                                value={raw}
+                                                onChange={(value) => setValue(field.key, value)}
+                                                onFocus={() => setActiveField(field.key)}
+                                                registerRef={registerRef}
+                                            />
+                                            {preview !== raw && (
+                                                <p
+                                                    className="truncate text-xs text-muted-foreground/80"
+                                                    title={preview}
+                                                >
+                                                    <span className="text-muted-foreground/60">
+                                                        Preview:
+                                                    </span>{" "}
+                                                    {preview || "empty"}
+                                                </p>
+                                            )}
+                                        </div>
+                                    )
+                                })}
+                            </AccordionContent>
+                        </AccordionItem>
+                    </Accordion>
                 ) : (
                     def.fields.map((field) => {
                         const raw = values[field.key] ?? ""
