@@ -13,6 +13,7 @@ import { extractNode } from "@/features/workflows/nodes/extract"
 import { observeNode } from "@/features/workflows/nodes/observe"
 import { sendEmailNode } from "@/features/workflows/nodes/send-email"
 import { verifyNode } from "@/features/workflows/nodes/verify"
+import { airtableNode } from "@/features/workflows/nodes/airtable"
 
 export type NodeContext = {
     nodeId?: string
@@ -31,11 +32,12 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         openUrl({ stagehand: await getStagehand(), url: values.url }),
     act: async ({ values, getStagehand }) =>
         actNode({ stagehand: await getStagehand(), instruction: values.instruction }),
-    agent: async ({ values, getStagehand }) =>
+    agent: async ({ values, getStagehand, nodeId }) =>
         agentNode({
             stagehand: await getStagehand(),
             instruction: values.instruction,
             candidateProfile: values.candidateProfile,
+            nodeId,
         }),
     extract: async ({ values, getStagehand }) =>
         extractNode({ stagehand: await getStagehand(), instruction: values.instruction }),
@@ -56,4 +58,6 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         }),
     "send-email": async ({ values, nodeId }) =>
         sendEmailNode({ values, nodeId }),
+    airtable: async ({ values, nodeId, outputs, nodes, edges, steps }) =>
+        airtableNode({ values, nodeId, outputs, nodes, edges, steps }),
 } satisfies Record<ActionNodeType, NodeExecutor>

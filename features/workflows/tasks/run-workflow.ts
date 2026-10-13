@@ -555,6 +555,28 @@ export const runWorkflowTask = task({
             metadata.set("goalEvaluation", goalEvaluation as any)
             await metadata.flush()
 
+            // Synchronize application or discovery outcome with Airtable if configured
+            try {
+                const { syncWorkflowExecutionOutcome } = await import(
+                    "@/lib/airtable/workflow-sync"
+                )
+                const airtableSyncResult = await syncWorkflowExecutionOutcome({
+                    steps,
+                    outputs,
+                    goalEvaluation,
+                    runId,
+                })
+                if (airtableSyncResult.synced) {
+                    logger.info("Airtable workflow outcome synchronized", {
+                        status: airtableSyncResult.statusAssigned,
+                    })
+                }
+            } catch (airtableSyncErr) {
+                logger.warn("Airtable sync warning (non-blocking)", {
+                    error: String(airtableSyncErr),
+                })
+            }
+
             return {
                 steps,
                 sessionId,

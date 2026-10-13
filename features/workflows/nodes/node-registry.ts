@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react"
-import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot } from "lucide-react"
+import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot, Database } from "lucide-react"
 import { Zap } from "lucide-react"
 
 export type StepNodeKind = "trigger" | "action"
@@ -114,6 +114,7 @@ export const nodeRegistry = {
       { path: "summary", label: "Summary" },
       { path: "message", label: "Message" },
       { path: "completed", label: "Completed" },
+      { path: "alreadyApplied", label: "Already Applied" },
       { path: "url", label: "URL" },
     ],
   },
@@ -163,6 +164,92 @@ export const nodeRegistry = {
     ],
     outputs: [
       { path: "id", label: "Email ID" },
+    ],
+  },
+  airtable: {
+    type: "airtable",
+    kind: "action",
+    label: "Airtable",
+    icon: Database,
+    accent: "bg-teal-500 text-white",
+    fields: [
+      {
+        key: "mode",
+        label: "Tracking Mode",
+        placeholder: "auto (Automatic Tracking: zero configuration needed)",
+        required: false,
+        description: "auto (Default: automatically tracks discovered and applied jobs without manual field mapping) or manual",
+      },
+      {
+        key: "operation",
+        label: "Operation",
+        placeholder: "auto (default) | save-discovered | confirm-application | record-attempt | check-status",
+        required: false,
+        description: "Operation: auto (default: infers from upstream agent/extract), save-discovered, record-attempt, confirm-application, check-status, update-status, list-followups",
+      },
+      {
+        key: "company",
+        label: "Company",
+        placeholder: "e.g. Stripe (optional: auto-inferred from upstream Agent/Extract if blank)",
+        required: false,
+      },
+      {
+        key: "jobTitle",
+        label: "Job Title",
+        placeholder: "e.g. Full Stack Engineer (optional: auto-inferred from upstream Agent/Extract if blank)",
+        required: false,
+      },
+      {
+        key: "jobUrl",
+        label: "Job URL (Optional)",
+        placeholder: "e.g. {{ open-url_1.url }}",
+        required: false,
+      },
+      {
+        key: "status",
+        label: "Status (Optional override)",
+        placeholder: "Discovered | Applied | Interview | etc.",
+        required: false,
+      },
+      {
+        key: "evidence",
+        label: "Submission Evidence (Optional)",
+        placeholder: "e.g. {{ verify_1.evidence }} or {{ agent_1.evidence }}",
+        multiline: true,
+        required: false,
+      },
+      {
+        key: "isVerified",
+        label: "Is Verified Submission (Optional)",
+        placeholder: "true | false (defaults to true if evidence is provided)",
+        required: false,
+      },
+      {
+        key: "notes",
+        label: "Notes / Research (Optional)",
+        placeholder: "Research insights, interview prep, or notes",
+        multiline: true,
+        required: false,
+      },
+      {
+        key: "salary",
+        label: "Salary (Optional)",
+        placeholder: "e.g. $120k - $150k",
+        required: false,
+      },
+      {
+        key: "location",
+        label: "Location (Optional)",
+        placeholder: "e.g. Remote / New York",
+        required: false,
+      },
+    ],
+    outputs: [
+      { path: "recordId", label: "Record ID" },
+      { path: "status", label: "Status" },
+      { path: "isNew", label: "Is New" },
+      { path: "alreadyApplied", label: "Already Applied" },
+      { path: "summary", label: "Summary" },
     ],
   },
 } satisfies Record<string, NodeDefinition>

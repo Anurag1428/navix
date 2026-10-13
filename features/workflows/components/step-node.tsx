@@ -82,7 +82,7 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
         </div>
       </div>
 
-          {fields.length > 0 ? (
+          {fields.length > 0 && !(type === "airtable" && fields.every((f) => f.key === "mode" && (!values[f.key] || values[f.key] === "auto"))) ? (
             <>
               <div className="border-t border-border" />
               <div className="flex flex-col gap-1.5 px-3 py-2.5">
@@ -106,6 +106,16 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
                 <span className="text-muted-foreground">Mode</span>
                 <span className="font-medium text-emerald-600 dark:text-emerald-400">
                   Auto Verification
+                </span>
+              </div>
+            </>
+          ) : type === "airtable" ? (
+            <>
+              <div className="border-t border-border" />
+              <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+                <span className="text-muted-foreground">Mode</span>
+                <span className="font-medium text-teal-600 dark:text-teal-400">
+                  Automatic Tracking
                 </span>
               </div>
             </>
