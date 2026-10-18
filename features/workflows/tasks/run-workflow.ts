@@ -45,7 +45,11 @@ export type RunWorkflowOutput = {
     steps: RunStep[]
     sessionId?: string
     goalEvaluation?: GoalEvaluation
+    summary?: Record<string, unknown>
 }
+
+import { buildWorkflowSummary } from "./workflow-summary.ts"
+export { buildWorkflowSummary }
 
 // How many times to retry a single step before giving up. The step
 // is re-executed in-place; prior step outputs and the Browserbase
@@ -68,6 +72,11 @@ export const runWorkflowTask = task({
         { ctx }
     ) => {
         const runId = ctx?.run?.id ?? `local_${Date.now()}`
+        const workflowStartTime = Date.now()
+        let workflowError: unknown = null
+        let airtableSyncResult: any = null
+        let goalEvaluation: GoalEvaluation | undefined
+
         const workflow = await getWorkflow(orgId, workflowId)
 
         if (!workflow?.graph) {
@@ -509,8 +518,6 @@ export const runWorkflowTask = task({
                         s.output !== undefined
                 )
 
-            let goalEvaluation: GoalEvaluation
-
             if (
                 agentOrVerifyStep &&
                 typeof agentOrVerifyStep.output === "object" &&
@@ -560,13 +567,13 @@ export const runWorkflowTask = task({
                 const { syncWorkflowExecutionOutcome } = await import(
                     "@/lib/airtable/workflow-sync"
                 )
-                const airtableSyncResult = await syncWorkflowExecutionOutcome({
+                airtableSyncResult = await syncWorkflowExecutionOutcome({
                     steps,
                     outputs,
                     goalEvaluation,
                     runId,
                 })
-                if (airtableSyncResult.synced) {
+                if (airtableSyncResult?.synced) {
                     logger.info("Airtable workflow outcome synchronized", {
                         status: airtableSyncResult.statusAssigned,
                     })
@@ -582,7 +589,43 @@ export const runWorkflowTask = task({
                 sessionId,
                 goalEvaluation,
             }
+        } catch (err) {
+            workflowError = err
+            throw err
         } finally {
+            // Build and display end-of-run workflow summary
+            try {
+                const durationMs = Date.now() - workflowStartTime
+                const summary = buildWorkflowSummary({
+                    workflowName: workflow?.name || "Workflow",
+                    workflowId,
+                    runId,
+                    durationMs,
+                    steps,
+                    outputs,
+                    goalEvaluation,
+                    airtableSyncResult,
+                    error: workflowError,
+                })
+
+                console.log("\n" + summary.text + "\n")
+                logger.info("Workflow execution summary generated", {
+                    runId,
+                    status: workflowError ? "FAILED" : "COMPLETED",
+                    durationMs,
+                    confirmedApplications: summary.data.confirmedCount,
+                    attemptedApplications: summary.data.attemptedCount,
+                })
+
+                try {
+                    metadata.set("workflowSummary", summary.data as any)
+                    await metadata.flush()
+                } catch {}
+            } catch (summaryErr) {
+                logger.warn("Failed to generate workflow summary (non-blocking)", {
+                    error: String(summaryErr),
+                })
+            }
             // Stagehand does NOT own the Browserbase or Playwright browser.
             // Close Stagehand first, then the browser / Playwright context.
             // Safely catch cleanup errors so socket teardowns do not mark successful runs as failed.

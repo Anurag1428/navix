@@ -1,6 +1,8 @@
 import {
   confirmApplication,
+  formatDate,
   hasAppliedTo,
+  listJobRecords,
   recordApplicationAttempt,
   saveDiscoveredJob,
 } from "./service.ts"
@@ -195,6 +197,17 @@ export function parseJobsFromText(
   if (!text || typeof text !== "string") return []
 
   const trimmed = text.trim()
+  // Guard against phrases indicating 0 jobs, search completion, or exhaustion
+  if (
+    /(?:applied|confirmed)\s+(?:to\s+)?0\s+jobs?/i.test(trimmed) ||
+    /applied\s+and\s+confirmed\s+0/i.test(trimmed) ||
+    /0\s+(?:jobs?|listings?)\s+applied/i.test(trimmed) ||
+    /no\s+(?:unapplied|matching|new)\s+(?:jobs|listings)/i.test(trimmed) ||
+    /search\s+(?:exhausted|completed|finished)/i.test(trimmed)
+  ) {
+    return []
+  }
+
   const results: ExtractedJobItem[] = []
   const cleanText = trimmed.replace(/\.+$/, "")
   const cleanUrl = isGenericSearchUrl(defaultUrl) ? undefined : defaultUrl
@@ -336,16 +349,34 @@ export function parseJobsFromText(
   }
 
   // Pattern 6: Title / instruction fallback: "Apply to [Company] for [Role]" or "[Company] - [Role]"
-  const titleMatch =
-    cleanText.match(/apply\s+to\s+([^-\s]+(?:\s+[^-\s]+)?)\s+(?:for\s+)?(.*)/i) ||
-    cleanText.match(/([^-]+)\s*-\s*(.*)/)
-  if (titleMatch) {
-    const company = titleMatch[1]?.trim()
-    const jobTitle = titleMatch[2]?.trim()
+  const applyMatch = cleanText.match(/apply\s+to\s+([^-\s]+(?:\s+[^-\s]+)?)\s+(?:for\s+)?(.*)/i)
+  if (applyMatch) {
+    const company = applyMatch[1]?.trim()
+    const jobTitle = applyMatch[2]?.trim()
     if (company && jobTitle && company.length > 1 && jobTitle.length > 1) {
       results.push({
         company,
         jobTitle,
+        jobUrl: cleanUrl,
+        evidence: defaultEvidence || text,
+        isVerified: false,
+        status: "Application Attempted",
+        notes: "Application attempted in workflow run. Individual submission proof was unresolved from aggregate summary.",
+      })
+      return results
+    }
+  }
+
+  const fallbackHyphenMatch = cleanText.match(/^([^-:\n]+?)\s*-\s*([^:\n]+)$/)
+  if (fallbackHyphenMatch) {
+    const left = fallbackHyphenMatch[1].trim()
+    const right = fallbackHyphenMatch[2].trim()
+    const isProsePhrase = /^(?:search|status|completed|applied|confirmed|attempted|inspected|task|result|summary|visited|overview|notice|note|target|all|no|mode)\b/i.test(left)
+    const hasPunctuation = /[.!?]/.test(left) || /[.!?]/.test(right)
+    if (!isProsePhrase && !hasPunctuation && left.length >= 2 && right.length >= 2 && left.length < 50 && right.length < 80) {
+      results.push({
+        company: left,
+        jobTitle: right,
         jobUrl: cleanUrl,
         evidence: defaultEvidence || text,
         isVerified: false,
@@ -503,7 +534,14 @@ export function extractJobsFromContext(params: {
   }
 
   // 4. Fallback: Parse agent natural language outputs ONLY if no structured jobs were found
-  if (jobs.length === 0) {
+  // AND no agent node explicitly reported structured job arrays (which means 0 genuine jobs were found/applied).
+  const hasAgentStructuredOutput = Object.values(outputs).some((out: any) =>
+    out &&
+    typeof out === "object" &&
+    (Array.isArray(out.confirmedJobs) || Array.isArray(out.attemptedJobs) || Array.isArray(out.appliedJobs))
+  )
+
+  if (jobs.length === 0 && !hasAgentStructuredOutput) {
     for (const [key, out] of Object.entries(outputs)) {
       if (!out || typeof out !== "object") continue
       const anyOut = out as any
@@ -523,7 +561,7 @@ export function extractJobsFromContext(params: {
   }
 
   // 5. Fallback: inspect step titles and values from steps
-  if (jobs.length === 0 && steps.length > 0) {
+  if (jobs.length === 0 && !hasAgentStructuredOutput && steps.length > 0) {
     for (const step of steps) {
       if (step.nodeType === "agent" || step.nodeType === "verify") {
         const text = step.title || ""
@@ -653,3 +691,67 @@ export async function syncWorkflowExecutionOutcome(params: {
     }
   }
 }
+
+export interface RecentAirtableApplication {
+  company: string
+  role?: string
+  dateApplied?: string
+  jobUrl?: string
+  jobId?: string
+}
+
+/**
+ * Loads recent applications from Airtable bounded to a specific time window (default 3 days)
+ * to seed the agent's memory with jobs that should not be revisited.
+ * Bounding to 3 days keeps the prompt small and prevents token bloat.
+ */
+export async function getRecentApplicationsFromAirtable(
+  windowDays: number = 3
+): Promise<RecentAirtableApplication[]> {
+  if (!isAirtableConfigured()) {
+    return []
+  }
+
+  try {
+    const cutoffDate = new Date()
+    cutoffDate.setDate(cutoffDate.getDate() - windowDays)
+    const appliedAfterOrOn = formatDate(cutoffDate)
+
+    const records = await listJobRecords({
+      status: ["Applied", "Application Attempted", "Assessment", "Interview", "Offer"],
+      appliedAfterOrOn,
+      limit: 100,
+    })
+
+    const seen = new Set<string>()
+    const results: RecentAirtableApplication[] = []
+
+    for (const r of records) {
+      const company = (r.fields.Company || r.fields.Name?.split(" - ")[0] || "").trim()
+      const role = (r.fields["Job Title"] || r.fields.Name?.split(" - ")[1] || "").trim()
+      const dateApplied = (r.fields["Date Applied"] || r.fields["Date Discovered"] || "").trim()
+      const rawJobUrl = (r.fields["Job URL"] || "").trim()
+      const jobId = r.id
+
+      if (!company) continue
+
+      const key = `${company.toLowerCase()}::${role.toLowerCase()}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        results.push({
+          company,
+          role: role || undefined,
+          dateApplied,
+          jobUrl: rawJobUrl || undefined,
+          jobId,
+        })
+      }
+    }
+
+    return results
+  } catch (err) {
+    console.warn("[Airtable Sync] Failed to load recent applications for memory bridge:", err)
+    return []
+  }
+}
+
