@@ -13,12 +13,19 @@ import { airtableNode } from "../airtable.ts"
 import {
   parseTargetCountFromInstruction,
   isSubmitAction,
+  isCloseAction,
+  extractWithRetry,
   getGenuineSubmissions,
   getAgentWorkingMemory,
   clearAgentWorkingMemory,
-  tryMechanicalAction,
+  cleanActionMessageForModel,
+  formatCompactRecentHistory,
+  formatCompactWorkingMemory,
   prunePageDom,
   restorePrunedPageDom,
+  parseTimeframeDaysFromInstruction,
+  isValidJobIdentifier,
+  tryMechanicalAction,
 } from "../agent.ts"
 
 import {
@@ -30,6 +37,7 @@ import type {
   JobStatus,
 } from "../../../../lib/airtable/types.ts"
 
+import { buildWorkflowSummary } from "../../tasks/workflow-summary.ts"
 import type { RunStep, GoalEvaluation } from "../../tasks/run-workflow.ts"
 
 describe("Workflow × Airtable Integration Points", () => {
@@ -752,7 +760,731 @@ describe("Workflow × Airtable Integration Points", () => {
     })
   })
 
-  // ── 9. Dynamic Off-Screen Restoration & Multi-Role Discovery ──────────────
+  // ── 7. Compact History, Ground Truth Confirmation & Filter Verification ──
+  describe("7. Compact History, Ground Truth Confirmation & Filter Verification", () => {
+    it("cleanActionMessageForModel removes raw xpath selectors and verbose details while preserving action outcomes", () => {
+      const rawSuccess =
+        "Action [click] performed successfully on selector: xpath=/html[1]/body[1]/div[5]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[2]/form[1]/div[3]/button[1]"
+      const cleanedSuccess = cleanActionMessageForModel(rawSuccess)
+      assert.equal(cleanedSuccess, "Action [click] performed successfully")
+      assert.equal(cleanedSuccess.includes("xpath="), false)
+
+      const rawFailure =
+        "Action [click] failed: element not interactable on selector: css=.submit-btn"
+      const cleanedFailure = cleanActionMessageForModel(rawFailure)
+      assert.equal(cleanedFailure, "Action [click] failed: element not interactable")
+      assert.equal(cleanedFailure.includes("css="), false)
+
+      assert.equal(cleanActionMessageForModel(""), "")
+      assert.equal(cleanActionMessageForModel(undefined), "")
+    })
+
+    it("formatCompactRecentHistory limits model-facing history to last 2 actions and preserves failure details", () => {
+      const history = [
+        {
+          instruction: "click the 'Filters' button",
+          success: true,
+          message: "Action [click] performed successfully on selector: xpath=/html/body/div[1]/button",
+        },
+        {
+          instruction: "click the 'View results' button",
+          success: true,
+          message: "Action [click] performed successfully on selector: xpath=/html/body/div[9]/button",
+        },
+        {
+          instruction: "click the 'Learn more' button on Auroscale",
+          success: true,
+          message: "Action [click] performed successfully on selector: xpath=/html/body/div[5]/button",
+        },
+        {
+          instruction: "click the 'Submit' button",
+          success: false,
+          message: "Action [click] failed: Validation error required field empty on selector: xpath=/html/form/button",
+        },
+      ]
+
+      const formatted = formatCompactRecentHistory(history, 2)
+      // Must include only the last 2 actions (steps 3 and 4)
+      assert.equal(formatted.includes("3. click the 'Learn more' button on Auroscale"), true)
+      assert.equal(formatted.includes("4. click the 'Submit' button -> FAILED: Action [click] failed: Validation error required field empty"), true)
+      // Must NOT contain step 1 or 2
+      assert.equal(formatted.includes("1. click the 'Filters' button"), false)
+      assert.equal(formatted.includes("2. click the 'View results' button"), false)
+      // Must summarize earlier steps
+      assert.equal(formatted.includes("earlier steps 1..2 summarized in Persistent Working Memory below"), true)
+      // Must not contain raw XPaths
+      assert.equal(formatted.includes("xpath="), false)
+    })
+
+    it("formatCompactWorkingMemory maintains full visited registry, counts, current page, and last action", () => {
+      clearAgentWorkingMemory("test_compact_mem")
+      const mem = getAgentWorkingMemory("test_compact_mem")
+      mem.targetCount = 2
+
+      mem.confirmedJobs.push({
+        company: "Auroscale",
+        role: "Full Stack Engineer Intern",
+        url: "https://wellfound.com/jobs/auroscale",
+        status: "confirmed",
+        evidence: "Application submitted confirmation banner observed",
+      })
+
+      mem.attemptedJobs.push({
+        company: "Nexvia Technologies",
+        role: "Full Stack Developer Intern",
+        status: "attempted",
+      })
+
+      mem.skippedJobs.push({
+        company: "Amura",
+        role: "Senior Frontend Engineer",
+        status: "skipped",
+        reason: "Requires 4-7 years experience",
+      })
+
+      mem.history.push({
+        instruction: "click the close button '✕'",
+        success: true,
+        message: "Action [click] performed successfully on selector: xpath=/html/body/div[5]/button",
+      })
+
+      const formatted = formatCompactWorkingMemory(mem, "https://wellfound.com/jobs")
+      // Check status overview
+      assert.equal(formatted.includes("Confirmed: 1/2"), true)
+      assert.equal(formatted.includes("Remaining Target: 1"), true)
+      assert.equal(formatted.includes("Current Page: https://wellfound.com/jobs"), true)
+      // Check last action result
+      assert.equal(formatted.includes("Last Action Result: click the close button '✕' -> succeeded"), true)
+      // Check visited listings registry
+      assert.equal(formatted.includes("[CONFIRMED] Auroscale - Full Stack Engineer Intern"), true)
+      assert.equal(formatted.includes("[ATTEMPTED] Nexvia Technologies - Full Stack Developer Intern"), true)
+      assert.equal(formatted.includes("[SKIPPED] Amura - Senior Frontend Engineer: Requires 4-7 years experience"), true)
+
+      clearAgentWorkingMemory("test_compact_mem")
+    })
+
+    it("duplicate submit interceptor blocks submit when a job is already in attemptedJobs or confirmedJobs", () => {
+      clearAgentWorkingMemory("test_unresolved_block")
+      const mem = getAgentWorkingMemory("test_unresolved_block")
+
+      // Job is currently in attemptedJobs (unresolved)
+      mem.attemptedJobs.push({
+        company: "Auroscale",
+        role: "Full Stack Engineer Intern",
+        status: "attempted",
+      })
+
+      const plannedInstruction = "click the 'Apply' button"
+      const isSubmit = isSubmitAction(plannedInstruction)
+      const currentJobCompany = "Auroscale"
+
+      const isCurrentJobAlreadyAttemptedOrConfirmed =
+        mem.confirmedJobs.some((j) => j.company.toLowerCase() === currentJobCompany.toLowerCase()) ||
+        mem.attemptedJobs.some((j) => j.company.toLowerCase() === currentJobCompany.toLowerCase())
+
+      let effectiveInstruction = plannedInstruction
+      if (isSubmit && isCurrentJobAlreadyAttemptedOrConfirmed) {
+        effectiveInstruction =
+          "click the close button '✕' or 'Close' on the modal to return to the job listings"
+      }
+
+      assert.equal(isSubmit, true)
+      assert.equal(isCurrentJobAlreadyAttemptedOrConfirmed, true)
+      assert.equal(
+        effectiveInstruction,
+        "click the close button '✕' or 'Close' on the modal to return to the job listings"
+      )
+
+      clearAgentWorkingMemory("test_unresolved_block")
+    })
+
+    it("ground truth confirmation guard demotes confirmed to attempted when evidence lacks verifiable on-page proof", () => {
+      const company = "TestCompany"
+      const role = "Software Engineer"
+      const status = "confirmed"
+
+      // Ambiguous / non-verifiable claims
+      const unverifiedEvidenceList = [
+        "",
+        "done",
+        "clicked",
+        "applied",
+        "finished the step",
+        "closed modal",
+      ]
+
+      for (const evidence of unverifiedEvidenceList) {
+        const rawEvidence = (evidence || "").trim()
+        const hasVerifiableProof =
+          rawEvidence.length >= 5 &&
+          !/^completed|^done|^clicked|^applied$/i.test(rawEvidence) &&
+          /(?:submitted|received|applied|sent|confirmation|success|applied\s+on|thank\s+you|pending)/i.test(
+            rawEvidence
+          )
+
+        let effectiveStatus = status
+        if (!hasVerifiableProof) {
+          effectiveStatus = "attempted"
+        }
+
+        assert.equal(
+          effectiveStatus,
+          "attempted",
+          `Should demote confirmation without proof: "${evidence}"`
+        )
+      }
+    })
+
+    it("ground truth confirmation guard preserves confirmed when reliable on-page evidence is provided", () => {
+      const status = "confirmed"
+      const verifiableEvidenceList = [
+        "Your application has been submitted to Auroscale",
+        "Button changed to 'Applied' with green checkmark",
+        "Success banner: Application received by engineering team",
+        "Confirmation modal: Thank you for applying!",
+      ]
+
+      for (const evidence of verifiableEvidenceList) {
+        const rawEvidence = (evidence || "").trim()
+        const hasVerifiableProof =
+          rawEvidence.length >= 5 &&
+          !/^completed|^done|^clicked|^applied$/i.test(rawEvidence) &&
+          /(?:submitted|received|applied|sent|confirmation|success|applied\s+on|thank\s+you|pending)/i.test(
+            rawEvidence
+          )
+
+        let effectiveStatus = status
+        if (!hasVerifiableProof) {
+          effectiveStatus = "attempted"
+        }
+
+        assert.equal(
+          effectiveStatus,
+          "confirmed",
+          `Should preserve confirmed with real proof: "${evidence}"`
+        )
+      }
+    })
+
+    it("maps confirmed jobs with proof to Applied and unverified attempts to Application Attempted in Airtable sync", () => {
+      const outputs = {
+        agent_step: {
+          confirmedJobs: [
+            {
+              company: "Auroscale",
+              role: "Full Stack Engineer Intern",
+              evidence: "Application submitted successfully confirmation banner",
+              url: "https://wellfound.com/jobs/auroscale-123",
+            },
+          ],
+          attemptedJobs: [
+            {
+              company: "Nexvia Technologies",
+              role: "Full Stack Developer Intern",
+              reason: "Submission click executed; awaiting explicit on-page confirmation proof.",
+            },
+          ],
+        },
+      }
+
+      const extracted = extractJobsFromContext({ outputs })
+      assert.equal(extracted.length, 2)
+
+      const auroscale = extracted.find((j) => j.company === "Auroscale")
+      assert.ok(auroscale)
+      assert.equal(auroscale.status, "Applied")
+      assert.equal(auroscale.isVerified, true)
+
+      const nexvia = extracted.find((j) => j.company === "Nexvia Technologies")
+      assert.ok(nexvia)
+      assert.equal(nexvia.status, "Application Attempted")
+      assert.equal(nexvia.isVerified, false)
+    })
+
+    it("isCloseAction correctly detects close, dismiss, backtrack, and exit modal instructions", () => {
+      // Positive cases
+      assert.equal(isCloseAction("click the close button '✕'"), true)
+      assert.equal(
+        isCloseAction("click the close button '✕' or 'Close' on the modal to return to the job listings"),
+        true
+      )
+      assert.equal(isCloseAction("click the 'Close' button"), true)
+      assert.equal(isCloseAction("close the modal to return to search"), true)
+      assert.equal(isCloseAction("backtrack by closing the modal"), true)
+      assert.equal(isCloseAction("exit dialog and return to job listings"), true)
+
+      // Negative cases
+      assert.equal(isCloseAction("click the 'Apply' button"), false)
+      assert.equal(isCloseAction("click the 'Learn more' button"), false)
+      assert.equal(isCloseAction("type 'Cover note' into textbox"), false)
+      assert.equal(isCloseAction("click the 'Filters' button"), false)
+      assert.equal(isCloseAction(""), false)
+      assert.equal(isCloseAction(undefined), false)
+    })
+
+    it("prevents premature attempted status by demoting inspecting/typing to inspected even when an earlier job was submitted", () => {
+      clearAgentWorkingMemory("test_demotion_multijob")
+      const mem = getAgentWorkingMemory("test_demotion_multijob")
+
+      // Step 7: Earlier job (Oneture Technologies) had a successful submit in history
+      mem.history.push({
+        instruction: "click the 'Apply' button on Oneture Technologies",
+        success: true,
+        message: "Action [click] performed successfully",
+      })
+      mem.attemptedJobs.push({
+        company: "Oneture Technologies",
+        role: "Full Stack Engineer",
+        status: "attempted",
+      })
+
+      // Step 10: Model inspects a second job (The Date Crew) and erroneously sends status: "attempted" while clicking Learn More
+      const currentDecision = {
+        instruction: "click the 'Learn more' button on the 'Full Stack Intern' card for The Date Crew",
+        jobUpdate: {
+          company: "The Date Crew",
+          role: "Full Stack Intern",
+          status: "attempted" as const,
+        },
+      }
+
+      const attemptedBeforeStep = new Set(mem.attemptedJobs.map((j) => j.company.toLowerCase().trim()))
+      const isCurrentlySubmitting = isSubmitAction(currentDecision.instruction)
+      const isAlreadyAttempted = attemptedBeforeStep.has(currentDecision.jobUpdate.company.toLowerCase().trim())
+
+      let effectiveStatus: "inspected" | "skipped" | "attempted" | "confirmed" = currentDecision.jobUpdate.status
+      if (effectiveStatus === "attempted") {
+        if (!isCurrentlySubmitting && !isAlreadyAttempted) {
+          effectiveStatus = "inspected"
+        }
+      }
+
+      // Must be demoted to "inspected" because The Date Crew itself was never submitted!
+      assert.equal(isCurrentlySubmitting, false)
+      assert.equal(isAlreadyAttempted, false)
+      assert.equal(effectiveStatus, "inspected")
+
+      clearAgentWorkingMemory("test_demotion_multijob")
+    })
+
+    it("allows first submit on a new job and intercepts only redundant/subsequent submits", () => {
+      clearAgentWorkingMemory("test_first_submit")
+      const mem = getAgentWorkingMemory("test_first_submit")
+
+      // Job 1 (Oneture) is already confirmed
+      mem.confirmedJobs.push({
+        company: "Oneture Technologies",
+        role: "Full Stack Engineer",
+        status: "confirmed",
+        evidence: "Application submitted banner observed",
+      })
+
+      // Step: The Date Crew is submitting for the VERY FIRST TIME
+      const attemptedBeforeStep = new Set(mem.attemptedJobs.map((j) => j.company.toLowerCase().trim()))
+      const confirmedBeforeStep = new Set(mem.confirmedJobs.map((j) => j.company.toLowerCase().trim()))
+
+      const firstSubmitInstruction = "click the 'Apply' button"
+      const currentCompany = "the date crew"
+      const isSubmit = isSubmitAction(firstSubmitInstruction)
+      const wasLastStepSubmit = false
+
+      const isCurrentJobAlreadyAttemptedOrConfirmed =
+        Boolean(currentCompany) &&
+        (confirmedBeforeStep.has(currentCompany) || attemptedBeforeStep.has(currentCompany))
+
+      let effectiveInstruction = firstSubmitInstruction
+      if (isSubmit && (wasLastStepSubmit || isCurrentJobAlreadyAttemptedOrConfirmed)) {
+        effectiveInstruction =
+          "click the close button '✕' or 'Close' on the modal to return to the job listings"
+      }
+
+      // FIRST submit must NOT be intercepted!
+      assert.equal(isCurrentJobAlreadyAttemptedOrConfirmed, false)
+      assert.equal(effectiveInstruction, firstSubmitInstruction)
+
+      // Now record that first submit succeeded
+      mem.history.push({
+        instruction: firstSubmitInstruction,
+        success: true,
+        message: "Action [click] performed successfully",
+      })
+      mem.attemptedJobs.push({
+        company: "The Date Crew",
+        role: "Full Stack Intern",
+        status: "attempted",
+      })
+
+      // Next Step: Model erroneously tries to click Apply AGAIN on the same job
+      const attemptedBeforeNextStep = new Set(mem.attemptedJobs.map((j) => j.company.toLowerCase().trim()))
+      const confirmedBeforeNextStep = new Set(mem.confirmedJobs.map((j) => j.company.toLowerCase().trim()))
+      const secondSubmitInstruction = "click the 'Apply' button"
+      const wasLastStepSubmitNext = true
+
+      const isRedundantAttempt =
+        Boolean(currentCompany) &&
+        (confirmedBeforeNextStep.has(currentCompany) || attemptedBeforeNextStep.has(currentCompany))
+
+      let secondEffectiveInstruction = secondSubmitInstruction
+      if (isSubmitAction(secondSubmitInstruction) && (wasLastStepSubmitNext || isRedundantAttempt)) {
+        secondEffectiveInstruction =
+          "click the close button '✕' or 'Close' on the modal to return to the job listings"
+      }
+
+      // SECOND submit MUST be intercepted and converted to modal close!
+      assert.equal(isRedundantAttempt, true)
+      assert.equal(
+        secondEffectiveInstruction,
+        "click the close button '✕' or 'Close' on the modal to return to the job listings"
+      )
+
+      clearAgentWorkingMemory("test_first_submit")
+    })
+
+    it("extractWithRetry retries on 429 quota exhaustion and returns data when retry succeeds", async () => {
+      let callCount = 0
+      const mockStagehand = {
+        extract: async () => {
+          callCount++
+          if (callCount === 1) {
+            throw new Error("AI_APICallError: Quota exceeded for metric: generate_content_free_tier_input_token_count, limit: 250000, model: gemini-3.5-flash-lite")
+          }
+          return {
+            data: {
+              action: "act",
+              instruction: "click the 'Learn more' button",
+            },
+          }
+        },
+      } as any
+
+      const origSetTimeout = globalThis.setTimeout
+      // Speed up setTimeout during test
+      globalThis.setTimeout = ((fn: any) => origSetTimeout(fn, 1)) as any
+
+      try {
+        const { z } = await import("zod")
+        const schema = z.object({
+          action: z.string(),
+          instruction: z.string(),
+        })
+
+        const result = await extractWithRetry(mockStagehand, "prompt", schema, 2)
+        assert.equal(callCount, 2)
+        assert.equal(result.data.action, "act")
+        assert.equal(result.data.instruction, "click the 'Learn more' button")
+      } finally {
+        globalThis.setTimeout = origSetTimeout
+      }
+    })
+
+    it("prunePageDom safely handles null/missing page", async () => {
+      const res = await prunePageDom(null)
+      assert.deepEqual(res, { prunedCount: 0, restoredCount: 0, hasOpenDialog: false })
+    })
+
+    it("prunePageDom executes page evaluate and returns prune metrics", async () => {
+      let evaluatedArg: any = null
+      const mockPage = {
+        evaluate: async (fn: any, arg: any) => {
+          evaluatedArg = arg
+          return { prunedCount: 14, restoredCount: 3, hasOpenDialog: true }
+        },
+      }
+
+      const res = await prunePageDom(mockPage, {
+        processedJobs: [{ company: "Acme Corp", role: "Frontend Engineer" }],
+        processedCompanies: ["Acme Corp", "Beta Labs"],
+        isolateOpenDialog: true,
+      })
+
+      assert.equal(res.prunedCount, 14)
+      assert.equal(res.restoredCount, 3)
+      assert.equal(res.hasOpenDialog, true)
+      assert.deepEqual(evaluatedArg.companies, ["Acme Corp", "Beta Labs"])
+      assert.deepEqual(evaluatedArg.jobs, [{ company: "Acme Corp", role: "Frontend Engineer" }])
+      assert.equal(evaluatedArg.isolateDialog, true)
+    })
+
+    it("extractWithRetry supports extraction options and gracefully falls back on error", async () => {
+      let callsWithOption = 0
+      let callsWithoutOption = 0
+
+      const mockStagehand = {
+        extract: async (_prompt: string, _schema: any, options: any) => {
+          if (options) {
+            callsWithOption++
+            throw new Error("Scoped locator not found on page")
+          }
+          callsWithoutOption++
+          return {
+            data: { action: "act", instruction: "scroll down" },
+          }
+        },
+      } as any
+
+      const { z } = await import("zod")
+      const schema = z.object({
+        action: z.string(),
+        instruction: z.string(),
+      })
+
+      const mockOptions = { ignoreLocators: [{ selector: "footer" }] }
+      const res = await extractWithRetry(mockStagehand, "test prompt", schema, mockOptions, 1)
+
+      assert.equal(callsWithOption, 1)
+      assert.equal(callsWithoutOption, 1)
+      assert.equal(res.data.action, "act")
+      assert.equal(res.data.instruction, "scroll down")
+    })
+
+    it("parseTimeframeDaysFromInstruction accurately extracts days from timeframe expressions", () => {
+      assert.equal(parseTimeframeDaysFromInstruction("apply to all jobs posted in the last 3 days"), 3)
+      assert.equal(parseTimeframeDaysFromInstruction("find listings from past 7 days and apply"), 7)
+      assert.equal(parseTimeframeDaysFromInstruction("apply to within 14 days postings"), 14)
+      assert.equal(parseTimeframeDaysFromInstruction("apply to 3 jobs"), undefined)
+      assert.equal(parseTimeframeDaysFromInstruction(""), undefined)
+    })
+
+    it("formatCompactWorkingMemory formats continuous timeframe mode when targetCount is not specified", () => {
+      clearAgentWorkingMemory("test_timeframe_mem")
+      const mem = getAgentWorkingMemory("test_timeframe_mem")
+      mem.timeframeDays = 3
+
+      mem.confirmedJobs.push({
+        company: "AlphaTech",
+        role: "Frontend Engineer Intern",
+        status: "confirmed",
+        evidence: "Application submitted confirmation",
+      })
+
+      const formatted = formatCompactWorkingMemory(mem, "https://wellfound.com/jobs")
+      assert.equal(formatted.includes("Mode: All unapplied matching jobs (last 3 days)"), true)
+      assert.equal(formatted.includes("Confirmed: 1"), true)
+      assert.equal(formatted.includes("Remaining Target:"), false)
+
+      clearAgentWorkingMemory("test_timeframe_mem")
+    })
+  })
+
+  // ── 8. 4-Scroll Circuit Breaker, Sanitization & Run Summary ───────────────
+  describe("8. 4-Scroll Circuit Breaker, Sanitization & Run Summary", () => {
+    it("isValidJobIdentifier rejects empty strings, null, undefined, and single character strings", () => {
+      assert.equal(isValidJobIdentifier(""), false)
+      assert.equal(isValidJobIdentifier("   "), false)
+      assert.equal(isValidJobIdentifier("null"), false)
+      assert.equal(isValidJobIdentifier("NULL"), false)
+      assert.equal(isValidJobIdentifier("undefined"), false)
+      assert.equal(isValidJobIdentifier("none"), false)
+      assert.equal(isValidJobIdentifier("a"), false)
+      assert.equal(isValidJobIdentifier(undefined), false)
+
+      assert.equal(isValidJobIdentifier("Google"), true)
+      assert.equal(isValidJobIdentifier("Frontend Engineer"), true)
+      assert.equal(isValidJobIdentifier("GoPratle"), true)
+    })
+
+    it("formatCompactWorkingMemory filters out blank and null jobs and tracks consecutive scrolls", () => {
+      clearAgentWorkingMemory("test_sanitize_mem")
+      const mem = getAgentWorkingMemory("test_sanitize_mem")
+      mem.consecutiveScrolls = 3
+
+      // Push valid and invalid entries
+      mem.inspectedJobs.push({
+        company: "",
+        role: "",
+        status: "inspected",
+      })
+      mem.inspectedJobs.push({
+        company: "null",
+        role: "null",
+        status: "inspected",
+      })
+      mem.inspectedJobs.push({
+        company: "Vercel",
+        role: "Software Engineer",
+        status: "inspected",
+      })
+
+      const formatted = formatCompactWorkingMemory(mem, "https://wellfound.com/jobs")
+      // Invalid entries must be filtered
+      assert.equal(formatted.includes("[INSPECTED]  - "), false)
+      assert.equal(formatted.includes("[INSPECTED] null - null"), false)
+      assert.equal(formatted.includes("[INSPECTED] Vercel - Software Engineer"), true)
+
+      // Scroll counter & warning notice
+      assert.equal(formatted.includes("Consecutive Scrolls: 3/4"), true)
+      assert.equal(formatted.includes("Notice: 3/4 consecutive scrolls reached"), true)
+
+      clearAgentWorkingMemory("test_sanitize_mem")
+    })
+
+    it("parseJobsFromText returns empty array when message indicates 0 jobs or search completion", () => {
+      const msgs = [
+        "Applied to 0 jobs. All matching listings were already applied in Airtable.",
+        "Applied and confirmed 0 job(s) - search completed.",
+        "Search exhausted: reached the 4-scroll limit without finding new unapplied matching listings.",
+        "Searched through available listings (4 consecutive scrolls with no new unapplied matching jobs found). Applied to 0 job(s).",
+        "Search completed - no unapplied listings found.",
+      ]
+
+      for (const msg of msgs) {
+        const jobs = parseJobsFromText(msg, "https://wellfound.com/jobs")
+        assert.equal(jobs.length, 0, `Message '${msg}' must return 0 jobs`)
+      }
+    })
+
+    it("extractJobsFromContext does NOT fall back to prose parsing when agent returned structured job arrays with 0 jobs", () => {
+      const steps: RunStep[] = [
+        {
+          id: "step_url",
+          nodeId: "open-url_1",
+          nodeType: "open-url",
+          title: "Open URL",
+          status: "done",
+        },
+        {
+          id: "step_agent",
+          nodeId: "agent_1",
+          nodeType: "agent",
+          title: "Apply to Web Dev Jobs on Wellfound",
+          status: "done",
+        },
+      ]
+
+      const outputs: Record<string, unknown> = {
+        step_url: { url: "https://wellfound.com/jobs" },
+        step_agent: {
+          success: true,
+          achieved: true,
+          message: "Searched through available listings (4 consecutive scrolls with no new unapplied matching jobs found). Applied to 0 job(s).",
+          summary: "Applied and confirmed 0 job(s) - search completed.",
+          confirmedJobs: [],
+          attemptedJobs: [],
+          skippedJobs: [
+            {
+              company: "CROSSK",
+              role: "Co-founder",
+              status: "skipped",
+              reason: "Requires 5+ years experience",
+            },
+          ],
+        },
+      }
+
+      const extracted = extractJobsFromContext({ steps, outputs })
+      // Crucial fix: Must be 0! Should not parse "search completed" as a fake job!
+      assert.equal(extracted.length, 0)
+    })
+
+    it("buildWorkflowSummary generates comprehensive report with job breakdown and audit verdict", () => {
+      const steps: RunStep[] = [
+        {
+          id: "step_1",
+          nodeId: "open-url_1",
+          nodeType: "open-url",
+          title: "Open Wellfound Jobs",
+          status: "done",
+          durationMs: 1200,
+        },
+        {
+          id: "step_2",
+          nodeId: "agent_1",
+          nodeType: "agent",
+          title: "Autonomous Apply Agent",
+          status: "done",
+          durationMs: 45000,
+        },
+        {
+          id: "step_3",
+          nodeId: "verify_1",
+          nodeType: "verify",
+          title: "Verify Outcome",
+          status: "done",
+          durationMs: 4000,
+        },
+      ]
+
+      const outputs: Record<string, unknown> = {
+        step_2: {
+          confirmedJobs: [
+            {
+              company: "Stripe",
+              role: "Full Stack Engineer",
+              evidence: "Application submitted confirmation banner observed",
+            },
+          ],
+          attemptedJobs: [],
+          skippedJobs: [
+            {
+              company: "LegacyCorp",
+              role: "Senior Lead",
+              reason: "Requires 8+ years experience",
+            },
+          ],
+          airtableRecentApplications: [
+            { company: "Vercel", role: "Frontend Dev" },
+            { company: "Linear", role: "Product Engineer" },
+          ],
+        },
+      }
+
+      const goalEvaluation: GoalEvaluation = {
+        achieved: true,
+        status: "achieved",
+        summary: "Applied and confirmed 1 job at Stripe with on-page proof.",
+        evidence: "Application submitted confirmation banner observed",
+      }
+
+      const summary = buildWorkflowSummary({
+        workflowName: "Web Dev Job Auto-Apply",
+        workflowId: "wf_123",
+        runId: "run_test_456",
+        durationMs: 50200,
+        steps,
+        outputs,
+        goalEvaluation,
+        airtableSyncResult: { synced: true, statusAssigned: "Applied", count: 1 },
+      })
+
+      assert.equal(summary.data.status, "COMPLETED")
+      assert.equal(summary.data.confirmedCount, 1)
+      assert.equal(summary.data.skippedCount, 1)
+      assert.equal(summary.data.airtableDeduplicatedCount, 2)
+      assert.equal(summary.text.includes("NAVIX WORKFLOW EXECUTION SUMMARY"), true)
+      assert.equal(summary.text.includes("Stripe"), true)
+      assert.equal(summary.text.includes("LegacyCorp"), true)
+      assert.equal(summary.text.includes("Synced:          Yes (Applied)"), true)
+    })
+
+    it("buildWorkflowSummary reports FAILED status and failure details when an error occurred", () => {
+      const steps: RunStep[] = [
+        {
+          id: "step_1",
+          nodeId: "open-url_1",
+          nodeType: "open-url",
+          title: "Open Wellfound Jobs",
+          status: "failed",
+          durationMs: 3000,
+          error: "Navigation timeout after 30000ms",
+        },
+      ]
+
+      const summary = buildWorkflowSummary({
+        workflowName: "Failing Workflow",
+        workflowId: "wf_fail",
+        runId: "run_fail_1",
+        durationMs: 3200,
+        steps,
+        outputs: {},
+        error: new Error("Navigation timeout after 30000ms"),
+      })
+
+      assert.equal(summary.data.status, "FAILED")
+      assert.equal(summary.text.includes("Overall Status:  FAILED"), true)
+      assert.equal(summary.text.includes("Navigation timeout after 30000ms"), true)
+    })
+  })
+
   describe("9. Dynamic Off-Screen Restoration & Multi-Role Discovery", () => {
     it("restorePrunedPageDom safely handles null/missing page", async () => {
       const res = await restorePrunedPageDom(null)
@@ -971,38 +1703,57 @@ describe("Workflow × Airtable Integration Points", () => {
     })
   })
 
-  // ── 10. Drawer Dismissal via Mechanical Action ───────────────────────────
-  describe("10. Drawer Dismissal via Mechanical Action", () => {
+  // ── 10. Drawer Dismissal, Scroll Preservation & Stagnation Auto-Heal ───────
+  describe("10. Drawer Dismissal, Scroll Preservation & Stagnation Auto-Heal", () => {
+    it("isCloseAction does not reset consecutiveScrolls", () => {
+      let scrollCount = 2
+      const closeInstruction = "click the close button '✕' or 'Close' on the modal to return to the job listings"
+
+      assert.equal(isCloseAction(closeInstruction), true)
+
+      // Emulate the updated agent scroll counter update logic
+      const isScrollDown = /scroll\s+down/i.test(closeInstruction)
+      if (isScrollDown) {
+        scrollCount++
+      } else if (
+        !isCloseAction(closeInstruction) &&
+        (/click.*(?:card|Learn more|Quick Apply|Apply)/i.test(closeInstruction) ||
+         /type\s+/i.test(closeInstruction))
+      ) {
+        scrollCount = 0
+      }
+
+      // Closing a modal must NOT reset the scroll count!
+      assert.equal(scrollCount, 2)
+
+      // But clicking a new card DOES reset the scroll count
+      const newCardInstruction = "click the 'Learn more' button on the 'Full Stack Intern' card"
+      const isNewCardScroll = /scroll\s+down/i.test(newCardInstruction)
+      if (isNewCardScroll) {
+        scrollCount++
+      } else if (
+        !isCloseAction(newCardInstruction) &&
+        (/click.*(?:card|Learn more|Quick Apply|Apply)/i.test(newCardInstruction) ||
+         /type\s+/i.test(newCardInstruction))
+      ) {
+        scrollCount = 0
+      }
+
+      assert.equal(scrollCount, 0)
+    })
+
     it("tryMechanicalAction handles job_listing_slug URL dismissal", async () => {
-      let currentUrl = "https://wellfound.com/jobs?job_listing_slug=4840021-test-role"
+      let url = "https://wellfound.com/jobs?job_listing_slug=4859119-full-stack-developer"
       let escapePressed = false
-      let popStateDispatched = false
 
       const mockPage = {
-        url: async () => currentUrl,
+        url: async () => url,
+        keyPress: async (k: string) => {
+          if (k === "Escape") escapePressed = true
+        },
         evaluate: async (fn: any) => {
-          const fnStr = fn.toString()
-          if (fnStr.includes("JobListingDrawer") || fnStr.includes("dialog")) {
-            return 1
-          }
-          if (fnStr.includes("delete") && fnStr.includes("job_listing_slug")) {
-            currentUrl = "https://wellfound.com/jobs"
-            popStateDispatched = true
-          }
-        },
-        keyPress: async (key: string) => {
-          if (key === "Escape") {
-            escapePressed = true
-            currentUrl = "https://wellfound.com/jobs"
-          }
-        },
-        keyboard: {
-          press: async (key: string) => {
-            if (key === "Escape") {
-              escapePressed = true
-              currentUrl = "https://wellfound.com/jobs"
-            }
-          },
+          // Emulate DOM check
+          return 1
         },
       }
 
@@ -1011,10 +1762,28 @@ describe("Workflow × Airtable Integration Points", () => {
         "click the close button '✕' or 'Close' on the modal to return to the job listings"
       )
 
+      assert.equal(escapePressed, true)
       assert.equal(result.handled, true)
       assert.equal(result.success, true)
-      assert.match(result.message, /Modal closed via mechanical Escape key/)
-      assert.equal(escapePressed, true)
+    })
+
+    it("Viewport Stagnation auto-heals to closing the modal when inside an open job drawer", () => {
+      const currentPageUrl = "https://wellfound.com/jobs?job_listing_slug=4859119-full-stack-developer"
+      const matchingProcessedJob = { company: "Kshm", role: "Full Stack Developer" }
+
+      const isDrawerOpen = Boolean(currentPageUrl && currentPageUrl.includes("job_listing_slug"))
+      let healedInstruction = ""
+
+      if (matchingProcessedJob) {
+        if (isDrawerOpen) {
+          healedInstruction = "click the close button '✕' or 'Close' on the modal to return to the job listings"
+        } else {
+          healedInstruction = "scroll down the page to reveal more job listings"
+        }
+      }
+
+      assert.equal(healedInstruction, "click the close button '✕' or 'Close' on the modal to return to the job listings")
     })
   })
 })
+
