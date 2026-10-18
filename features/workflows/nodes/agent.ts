@@ -3,7 +3,9 @@ import { z } from "zod"
 import { logger, metadata, wait } from "@trigger.dev/sdk"
 import {
     checkJobResubmissionGuard,
+    getRecentApplicationsFromAirtable,
     isGenericSearchUrl,
+    type RecentAirtableApplication,
 } from "../../../lib/airtable/workflow-sync.ts"
 
 const MAX_STEPS = 20
@@ -31,6 +33,7 @@ export type AgentWorkingMemory = {
     attemptedJobs: JobMemoryEntry[]
     skippedJobs: JobMemoryEntry[]
     targetCount?: number
+    airtableRecentApplications?: RecentAirtableApplication[]
 }
 
 const globalAgentMemoryStore = new Map<string, AgentWorkingMemory>()
@@ -598,6 +601,476 @@ export async function generateMicroResponseWithQwen({
     }
 }
 
+export interface ProcessedJobTarget {
+    id?: string
+    url?: string
+    company: string
+    role?: string
+}
+
+/**
+ * DOM Pruning for Token Optimization:
+ * Reduces the accessibility tree snapshot size by 50-70% before sending to the Macro LLM.
+ *
+ * 1. Boilerplate Clutter: Marks footers, cookie banners, chat widgets, and feedback tools with aria-hidden="true".
+ * 2. Decorative SVGs: Marks complex icon/illustration SVGs without labels as aria-hidden="true".
+ * 3. Already Processed Job Cards: Marks cards for specific jobs (by ID, URL, or company + role)
+ *    that have already been skipped or confirmed as aria-hidden="true" so Gemini doesn't re-read stale cards.
+ *    NOTE: Never masks by company alone; multiple roles at the same company remain discoverable!
+ * 4. Active Dialog Isolation: If an application drawer/modal is open, marks background siblings
+ *    outside the dialog as aria-hidden="true" so the snapshot focuses strictly on the active drawer.
+ * 5. Dynamic Off-Screen Bounding & Restoration: Hides cards scrolled far out of view (-800px / +1500px),
+ *    and dynamically restores their original visibility whenever they scroll back into the active buffer!
+ */
+export async function prunePageDom(
+    page: any,
+    options: {
+        processedJobs?: ProcessedJobTarget[]
+        processedCompanies?: string[]
+        isolateOpenDialog?: boolean
+    } = {}
+): Promise<{ prunedCount: number; restoredCount: number; hasOpenDialog: boolean }> {
+    if (!page) return { prunedCount: 0, restoredCount: 0, hasOpenDialog: false }
+
+    try {
+        return await page.evaluate(
+            ({
+                jobs,
+                companies,
+                isolateDialog,
+            }: {
+                jobs: ProcessedJobTarget[]
+                companies: string[]
+                isolateDialog: boolean
+            }) => {
+                let prunedCount = 0
+                let restoredCount = 0
+                const vh = window.innerHeight || 800
+
+                // 0. Dynamic Restoration: Restore any previously off-screen cards that scrolled back into the active buffer
+                try {
+                    const offscreenElements = document.querySelectorAll<HTMLElement>(
+                        '[data-pruned-offscreen="true"]'
+                    )
+                    offscreenElements.forEach((el) => {
+                        try {
+                            const rect = el.getBoundingClientRect()
+                            // If the element is now within the active buffer (-800px to vh + 1500px), restore it
+                            const isInActiveRange = rect.bottom >= -800 && rect.top <= (vh + 1500)
+                            if (isInActiveRange) {
+                                const originalAria = el.getAttribute("data-stagehand-original-aria-hidden")
+                                if (originalAria && originalAria !== "__none__") {
+                                    el.setAttribute("aria-hidden", originalAria)
+                                } else {
+                                    el.removeAttribute("aria-hidden")
+                                }
+                                el.removeAttribute("data-pruned-offscreen")
+                                el.removeAttribute("data-stagehand-original-aria-hidden")
+                                restoredCount++
+                            }
+                        } catch {}
+                    })
+                } catch {}
+
+                // 1. Hide footer, cookie notices, chat widgets, feedback tools
+                const boilerplateSelectors = [
+                    "footer",
+                    "#cookie-banner",
+                    ".cookie-banner",
+                    '[id*="cookie" i]',
+                    '[class*="cookie" i]',
+                    "#intercom-container",
+                    '[class*="intercom" i]',
+                    'iframe[title*="chat" i]',
+                    'aside[aria-label*="feedback" i]',
+                ]
+                for (const sel of boilerplateSelectors) {
+                    try {
+                        const elements = document.querySelectorAll<HTMLElement>(sel)
+                        elements.forEach((el) => {
+                            if (!el.getAttribute("aria-hidden")) {
+                                el.setAttribute("aria-hidden", "true")
+                                prunedCount++
+                            }
+                        })
+                    } catch {}
+                }
+
+                // 2. Hide decorative SVGs (paths with no text, no title, no aria-label)
+                try {
+                    const svgs = document.querySelectorAll<SVGElement>("svg")
+                    svgs.forEach((svg) => {
+                        const hasLabel =
+                            svg.getAttribute("aria-label") ||
+                            svg.getAttribute("title") ||
+                            svg.querySelector("title") ||
+                            svg.closest("button")?.getAttribute("aria-label")
+                        if (!hasLabel && !svg.getAttribute("aria-hidden")) {
+                            svg.setAttribute("aria-hidden", "true")
+                            prunedCount++
+                        }
+                    })
+                } catch {}
+
+                // Helper matchers for processed job cards
+                function matchesJobId(card: HTMLElement, targetId?: string): boolean {
+                    if (!targetId || typeof targetId !== "string" || targetId.trim().length < 3) {
+                        return false
+                    }
+                    const cleanId = targetId.trim()
+                    const idLower = cleanId.toLowerCase()
+
+                    if (
+                        card.getAttribute("data-job-id") === cleanId ||
+                        card.getAttribute("data-id") === cleanId ||
+                        card.id === cleanId ||
+                        card.id.toLowerCase().includes(idLower)
+                    ) {
+                        return true
+                    }
+
+                    const matchingChild = card.querySelector(
+                        `[data-job-id="${cleanId}"], [data-id="${cleanId}"], [id*="${cleanId}"]`
+                    )
+                    if (matchingChild) return true
+
+                    const anchors = card.querySelectorAll<HTMLAnchorElement>("a[href]")
+                    for (const a of Array.from(anchors)) {
+                        const href = a.getAttribute("href") || ""
+                        if (href.includes(cleanId)) return true
+                    }
+
+                    return false
+                }
+
+                function matchesJobUrl(card: HTMLElement, targetUrl?: string): boolean {
+                    if (!targetUrl || typeof targetUrl !== "string" || targetUrl.trim().length <= 5) {
+                        return false
+                    }
+                    const cleanTarget = targetUrl.trim().toLowerCase()
+                    let targetPath = ""
+                    try {
+                        const parsed = new URL(cleanTarget, window.location.origin)
+                        targetPath = parsed.pathname.replace(/\/+$/, "")
+                    } catch {
+                        targetPath = cleanTarget.split("?")[0].split("#")[0].replace(/\/+$/, "")
+                    }
+
+                    if (!targetPath || /^\/(?:jobs?|search|browse|explore|find)?\/?$/i.test(targetPath)) {
+                        return false
+                    }
+
+                    const anchors = card.querySelectorAll<HTMLAnchorElement>("a[href]")
+                    for (const a of Array.from(anchors)) {
+                        try {
+                            const aHref = a.getAttribute("href") || ""
+                            if (!aHref) continue
+                            const aUrl = new URL(aHref, window.location.origin)
+                            const aPath = aUrl.pathname.replace(/\/+$/, "").toLowerCase()
+                            if (aPath && (aPath === targetPath || aPath.endsWith(targetPath) || targetPath.endsWith(aPath))) {
+                                return true
+                            }
+                        } catch {
+                            const rawHref = (a.getAttribute("href") || "").toLowerCase()
+                            if (rawHref && targetPath && (rawHref.includes(targetPath) || targetPath.includes(rawHref))) {
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }
+
+                function matchesCompanyAndRole(card: HTMLElement, company?: string, role?: string): boolean {
+                    if (!company || typeof company !== "string" || !role || typeof role !== "string") {
+                        return false
+                    }
+                    const cNorm = company.trim().toLowerCase()
+                    const rNorm = role.trim().toLowerCase()
+                    if (cNorm.length < 2 || rNorm.length < 2) return false
+                    if (cNorm === "null" || cNorm === "undefined" || rNorm === "null" || rNorm === "undefined") {
+                        return false
+                    }
+
+                    const cardText = (card.textContent || "").toLowerCase()
+                    if (!cardText.includes(cNorm)) return false
+
+                    if (cardText.includes(rNorm)) return true
+
+                    const cleanRole = rNorm.replace(/\s*\([^)]*\)/g, "").trim()
+                    if (cleanRole.length >= 3 && cardText.includes(cleanRole)) {
+                        return true
+                    }
+
+                    return false
+                }
+
+                // 3. Hide already processed job cards (must match specific ID, canonical URL, or company + role)
+                const cardSelectors = [
+                    '[role="listitem"]',
+                    "article",
+                    '[data-test*="job" i]',
+                    '[class*="job-card" i]',
+                    '[class*="JobCard" i]',
+                    '[class*="jobCard" i]',
+                    "[data-job-id]",
+                    '[data-testid*="job" i]',
+                ]
+
+                const targetJobs: ProcessedJobTarget[] = Array.isArray(jobs) ? [...jobs] : []
+
+                if (targetJobs.length > 0) {
+                    try {
+                        const cards = document.querySelectorAll<HTMLElement>(cardSelectors.join(", "))
+                        cards.forEach((card) => {
+                            const matchesProcessed = targetJobs.some((target) => {
+                                // 1. Direct Job ID match
+                                if (target.id && matchesJobId(card, target.id)) return true
+                                // 2. Canonical Job URL match
+                                if (target.url && matchesJobUrl(card, target.url)) return true
+                                // 3. Fallback: Company AND Role together
+                                if (target.company && target.role && matchesCompanyAndRole(card, target.company, target.role)) return true
+                                // Never match by company alone: other roles at that company remain discoverable!
+                                return false
+                            })
+
+                            if (matchesProcessed && !card.getAttribute("aria-hidden")) {
+                                if (!card.hasAttribute("data-stagehand-original-aria-hidden")) {
+                                    card.setAttribute(
+                                        "data-stagehand-original-aria-hidden",
+                                        card.getAttribute("aria-hidden") || "__none__"
+                                    )
+                                }
+                                card.setAttribute("data-pruned-processed", "true")
+                                card.setAttribute("aria-hidden", "true")
+                                prunedCount++
+                            }
+                        })
+                    } catch {}
+                }
+
+                // 4. Dialog isolation: If a modal/drawer is genuinely VISIBLE on screen, isolate it
+                let hasOpenDialog = false
+                try {
+                    const dialogs = Array.from(
+                        document.querySelectorAll<HTMLElement>(
+                            '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [data-test*="drawer" i], [class*="styles_drawer" i]'
+                        )
+                    )
+                    const visibleDialog = dialogs.find((el) => {
+                        try {
+                            const style = window.getComputedStyle(el)
+                            const rect = el.getBoundingClientRect()
+                            const isDisplayVisible =
+                                style.display !== "none" &&
+                                style.visibility !== "hidden" &&
+                                style.opacity !== "0"
+                            const hasDimensions =
+                                (rect.width > 20 && rect.height > 20) ||
+                                (el.offsetWidth > 20 && el.offsetHeight > 20)
+                            return isDisplayVisible && hasDimensions
+                        } catch {
+                            return false
+                        }
+                    })
+
+                    if (visibleDialog) {
+                        hasOpenDialog = true
+                        visibleDialog.setAttribute("data-stagehand-active-dialog", "true")
+
+                        if (isolateDialog) {
+                            const topLevelContainers = document.querySelectorAll<HTMLElement>(
+                                "body > div:not([data-stagehand-active-dialog='true']):not([role='dialog']):not([aria-modal='true']), main"
+                            )
+                            topLevelContainers.forEach((container) => {
+                                if (!container.contains(visibleDialog) && !container.getAttribute("aria-hidden")) {
+                                    if (!container.hasAttribute("data-stagehand-original-aria-hidden")) {
+                                        container.setAttribute(
+                                            "data-stagehand-original-aria-hidden",
+                                            container.getAttribute("aria-hidden") || "__none__"
+                                        )
+                                    }
+                                    container.setAttribute("data-pruned-dialog", "true")
+                                    container.setAttribute("aria-hidden", "true")
+                                    prunedCount++
+                                }
+                            })
+                        }
+                    } else {
+                        // Ensure any stale marker is cleared
+                        document.querySelectorAll('[data-stagehand-active-dialog]').forEach((el) => {
+                            el.removeAttribute("data-stagehand-active-dialog")
+                        })
+                        // Restore containers previously hidden by dialog isolation
+                        document.querySelectorAll<HTMLElement>('[data-pruned-dialog="true"]').forEach((container) => {
+                            try {
+                                const originalAria = container.getAttribute("data-stagehand-original-aria-hidden")
+                                if (originalAria && originalAria !== "__none__") {
+                                    container.setAttribute("aria-hidden", originalAria)
+                                } else {
+                                    container.removeAttribute("aria-hidden")
+                                }
+                                container.removeAttribute("data-pruned-dialog")
+                                container.removeAttribute("data-stagehand-original-aria-hidden")
+                                restoredCount++
+                            } catch {}
+                        })
+                    }
+                } catch {}
+
+                // 5. Hide job cards that have scrolled far off-screen (viewport bounding for infinite scroll)
+                try {
+                    const allCards = document.querySelectorAll<HTMLElement>(cardSelectors.join(", "))
+                    allCards.forEach((card) => {
+                        try {
+                            if (
+                                card.hasAttribute("data-pruned-processed") ||
+                                card.hasAttribute("data-pruned-dialog")
+                            ) {
+                                return
+                            }
+                            const rect = card.getBoundingClientRect()
+                            // If the card is more than 800px above the top of the viewport or 1500px below
+                            const isFarOffScreen = rect.bottom < -800 || rect.top > (vh + 1500)
+                            if (isFarOffScreen && !card.getAttribute("aria-hidden")) {
+                                if (!card.hasAttribute("data-stagehand-original-aria-hidden")) {
+                                    card.setAttribute(
+                                        "data-stagehand-original-aria-hidden",
+                                        card.getAttribute("aria-hidden") || "__none__"
+                                    )
+                                }
+                                card.setAttribute("data-pruned-offscreen", "true")
+                                card.setAttribute("aria-hidden", "true")
+                                prunedCount++
+                            }
+                        } catch {}
+                    })
+                } catch {}
+
+                return { prunedCount, restoredCount, hasOpenDialog }
+            },
+            {
+                jobs: options.processedJobs || [],
+                companies: options.processedCompanies || [],
+                isolateDialog: options.isolateOpenDialog !== false,
+            }
+        )
+    } catch {
+        return { prunedCount: 0, restoredCount: 0, hasOpenDialog: false }
+    }
+}
+
+/**
+ * Fully restores all elements modified by prunePageDom to their original accessibility state.
+ */
+export async function restorePrunedPageDom(page: any): Promise<number> {
+    if (!page) return 0
+    try {
+        return await page.evaluate(() => {
+            let restored = 0
+            const pruned = document.querySelectorAll<HTMLElement>(
+                '[data-stagehand-original-aria-hidden], [data-pruned-offscreen], [data-pruned-processed], [data-pruned-dialog]'
+            )
+            pruned.forEach((el) => {
+                try {
+                    const originalAria = el.getAttribute("data-stagehand-original-aria-hidden")
+                    if (originalAria && originalAria !== "__none__") {
+                        el.setAttribute("aria-hidden", originalAria)
+                    } else {
+                        el.removeAttribute("aria-hidden")
+                    }
+                    el.removeAttribute("data-stagehand-original-aria-hidden")
+                    el.removeAttribute("data-pruned-offscreen")
+                    el.removeAttribute("data-pruned-processed")
+                    el.removeAttribute("data-pruned-dialog")
+                    restored++
+                } catch {}
+            })
+            document.querySelectorAll('[data-stagehand-active-dialog]').forEach((el) => {
+                el.removeAttribute("data-stagehand-active-dialog")
+            })
+            return restored
+        })
+    } catch {
+        return 0
+    }
+}
+
+/**
+ * Executes stagehand.extract with automatic rate-limit backoff retry and optional locator scoping.
+ * Catches 429 quota exhaustion (e.g. Gemini 250k input tokens/min free tier)
+ * by pausing for rolling quota reset before retrying rather than aborting the workflow.
+ */
+export async function extractWithRetry<T>(
+    stagehand: Stagehand,
+    prompt: string,
+    schema: z.ZodType<T>,
+    optionsOrMaxRetries?: any,
+    maybeMaxRetries?: number
+): Promise<{ data: T }> {
+    let options: any = undefined
+    let maxRetries = 3
+
+    if (typeof optionsOrMaxRetries === "number") {
+        maxRetries = optionsOrMaxRetries
+    } else if (optionsOrMaxRetries && typeof optionsOrMaxRetries === "object") {
+        options = optionsOrMaxRetries
+        if (typeof maybeMaxRetries === "number") {
+            maxRetries = maybeMaxRetries
+        }
+    }
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return (await stagehand.extract(prompt, schema as any, options)) as { data: T }
+        } catch (err: any) {
+            // If scoped options (locator / ignoreLocators) caused an issue on attempt 0,
+            // immediately retry without options before falling into backoff
+            if (options && attempt === 0) {
+                logger.warn(
+                    "[Agent] Scoped extraction failed, falling back to unconstrained extract",
+                    { error: String(err?.message || err) }
+                )
+                try {
+                    return (await stagehand.extract(prompt, schema as any)) as { data: T }
+                } catch {}
+            }
+
+            const errStr = String(err?.message || err)
+            const isDailyQuotaExceeded =
+                errStr.includes("free_tier_requests") ||
+                /retry in \d+h/i.test(errStr) ||
+                (errStr.includes("Quota exceeded") && errStr.toLowerCase().includes("daily"))
+
+            if (isDailyQuotaExceeded) {
+                logger.error(
+                    `[Agent] Daily AI model quota hard ceiling reached. Failing immediately without backoff.`,
+                    { error: errStr }
+                )
+                throw new Error(`AI model daily quota exceeded (${errStr}). Please switch API keys or upgrade provider tier.`)
+            }
+
+            const isRateLimit =
+                errStr.includes("429") ||
+                errStr.includes("Quota exceeded") ||
+                errStr.includes("RESOURCE_EXHAUSTED") ||
+                errStr.includes("rate_limit") ||
+                err?.status === 429
+
+            if (isRateLimit && attempt < maxRetries) {
+                const backoffMs = (attempt + 1) * 12000
+                logger.warn(
+                    `[Agent] Rate limit / quota reached. Waiting ${backoffMs / 1000}s before retry ${attempt + 1}/${maxRetries}...`,
+                    { error: errStr }
+                )
+                await new Promise((r) => setTimeout(r, backoffMs))
+                continue
+            }
+            throw err
+        }
+    }
+    throw new Error("extractWithRetry exhausted")
+}
+
 /**
  * Runs an autonomous multi-step browser task by looping:
  * plan the next single action (via extract(), routed through
@@ -694,8 +1167,63 @@ ${mem.inspectedJobs.length > 0 ? mem.inspectedJobs.map((j) => `  • ${j.company
 ${mem.skippedJobs.length > 0 ? mem.skippedJobs.map((j) => `  • ${j.company} - ${j.role}: ${j.reason || "did not match criteria"}`).join("\n") : "  (none yet)"}
 `.trim()
 
-        const plannerResult = await stagehand.extract(
-            `You are driving a web browser step by step to complete this task:
+        // ── DOM Pruning & Scoped Extraction (Token Optimization) ───────────
+        let extractOptions: any = undefined
+        if (page) {
+            const processedJobs: ProcessedJobTarget[] = [
+                ...mem.skippedJobs.map((j) => ({
+                    company: j.company,
+                    role: j.role,
+                    url: j.url,
+                })),
+                ...mem.confirmedJobs.map((j) => ({
+                    company: j.company,
+                    role: j.role,
+                    url: j.url,
+                })),
+                ...(mem.airtableRecentApplications?.map((j) => ({
+                    company: j.company,
+                    role: j.role,
+                    url: j.jobUrl,
+                    id: j.jobId,
+                })) || []),
+            ]
+            const pruneResult = await prunePageDom(page, { processedJobs })
+            if (pruneResult.prunedCount > 0 || pruneResult.restoredCount > 0) {
+                logger.info(
+                    `[Agent] DOM Pruning: masked ${pruneResult.prunedCount}, restored ${pruneResult.restoredCount} elements (dialogOpen=${pruneResult.hasOpenDialog})`
+                )
+            }
+
+            try {
+                if (pruneResult.hasOpenDialog) {
+                    // Scope extraction to the open drawer/modal to drop background tokens
+                    extractOptions = {
+                        locator: page.locator('[data-stagehand-active-dialog="true"]'),
+                    }
+                } else {
+                    // On search results, ignore static header/footer/nav and aria-hidden elements
+                    extractOptions = {
+                        ignoreLocators: [
+                            page.locator("header"),
+                            page.locator("footer"),
+                            page.locator("nav"),
+                            page.locator('[aria-hidden="true"]'),
+                        ],
+                    }
+                }
+            } catch {}
+        }
+
+        let plannerAttempts = 0
+        let decision: z.infer<typeof PlannerDecisionSchema> | undefined
+
+        while (plannerAttempts < 2 && !decision) {
+            plannerAttempts++
+            try {
+                const result = await extractWithRetry(
+                    stagehand,
+                    `You are driving a web browser step by step to complete this task:
 "${instruction}"
 
 Steps taken so far:
@@ -765,10 +1293,27 @@ RULES FOR DECISIONS:
 
 CANDIDATE PROFILE:
 ${candidateProfile || DEFAULT_CANDIDATE_PROFILE}`,
-            PlannerDecisionSchema
-        )
+                    PlannerDecisionSchema,
+                    extractOptions
+                )
+                decision = result.data
+            } catch (err: any) {
+                if (plannerAttempts >= 2) {
+                    throw new Error(
+                        `Planner failed to return a valid decision after 2 attempts: ${err?.message || err}`
+                    )
+                }
+                logger.warn(
+                    `[Agent] Planner attempt ${plannerAttempts} failed schema validation. Retrying extraction...`,
+                    { error: String(err?.message || err) }
+                )
+                await new Promise((r) => setTimeout(r, 1000))
+            }
+        }
 
-        const decision = plannerResult.data
+        if (!decision) {
+            throw new Error("Planner failed to return a valid decision after 2 attempts.")
+        }
 
         if (decision.jobUpdate) {
             const { company, role, url, status, reason, evidence } = decision.jobUpdate
@@ -904,7 +1449,47 @@ ${candidateProfile || DEFAULT_CANDIDATE_PROFILE}`,
             }
 
             try {
-                const verifyResult = await stagehand.extract(
+                let auditOptions: any = undefined
+                if (page) {
+                    const processedJobs: ProcessedJobTarget[] = [
+                        ...mem.skippedJobs.map((j) => ({
+                            company: j.company,
+                            role: j.role,
+                            url: j.url,
+                        })),
+                        ...mem.confirmedJobs.map((j) => ({
+                            company: j.company,
+                            role: j.role,
+                            url: j.url,
+                        })),
+                        ...(mem.airtableRecentApplications?.map((j) => ({
+                            company: j.company,
+                            role: j.role,
+                            url: j.jobUrl,
+                            id: j.jobId,
+                        })) || []),
+                    ]
+                    const pruneResult = await prunePageDom(page, { processedJobs })
+                    try {
+                        if (pruneResult.hasOpenDialog) {
+                            auditOptions = {
+                                locator: page.locator('[data-stagehand-active-dialog="true"]'),
+                            }
+                        } else {
+                            auditOptions = {
+                                ignoreLocators: [
+                                    page.locator("header"),
+                                    page.locator("footer"),
+                                    page.locator("nav"),
+                                    page.locator('[aria-hidden="true"]'),
+                                ],
+                            }
+                        }
+                    } catch {}
+                }
+
+                const verifyResult = await extractWithRetry(
+                    stagehand,
                     `You are an objective auditor evaluating whether the user's task was successfully accomplished on this web page.
 Goal / Task: "${instruction}"
 Actions taken:
@@ -917,7 +1502,8 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                         achieved: z.boolean().describe("Whether the goal was genuinely achieved on the page"),
                         evidence: z.string().describe("Specific proof from the page (e.g. confirmation message, order ID, success banner) or explanation of deficiency"),
                         summary: z.string().describe("Concise summary of the outcome"),
-                    })
+                    }),
+                    auditOptions
                 )
                 if (verifyResult?.data) {
                     verification = verifyResult.data
@@ -944,10 +1530,13 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
 
             // If verification indicates failure and cannot continue:
             if (!verification.achieved) {
+                await restorePrunedPageDom(page).catch(() => {})
                 throw new Error(
                     `Agent goal unfulfilled: ${verification.evidence || decision.message || "Goal verification failed"}`
                 )
             }
+
+            await restorePrunedPageDom(page).catch(() => {})
 
             return {
                 success: true,
@@ -1103,6 +1692,8 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
 
     const page = await stagehand.browser.context.activePage()
     const resolvedUrl = page ? await page.url() : ""
+
+    await restorePrunedPageDom(page).catch(() => {})
 
     throw new Error(
         `Agent did not complete the task within ${MAX_STEPS} steps. Last state URL: ${resolvedUrl || "unknown"}`

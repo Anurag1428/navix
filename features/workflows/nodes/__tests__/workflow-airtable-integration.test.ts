@@ -17,6 +17,8 @@ import {
   getAgentWorkingMemory,
   clearAgentWorkingMemory,
   tryMechanicalAction,
+  prunePageDom,
+  restorePrunedPageDom,
 } from "../agent.ts"
 
 import {
@@ -747,6 +749,225 @@ describe("Workflow × Airtable Integration Points", () => {
       const avyam = extracted.filter((j) => j.company === "AVYAM LABS")
       assert.equal(avyam.length, 1)
       assert.equal(avyam[0].status, "Application Attempted")
+    })
+  })
+
+  // ── 9. Dynamic Off-Screen Restoration & Multi-Role Discovery ──────────────
+  describe("9. Dynamic Off-Screen Restoration & Multi-Role Discovery", () => {
+    it("restorePrunedPageDom safely handles null/missing page", async () => {
+      const res = await restorePrunedPageDom(null)
+      assert.equal(res, 0)
+    })
+
+    it("restorePrunedPageDom executes evaluate on page and returns restored count", async () => {
+      const mockPage = {
+        evaluate: async () => 7,
+      }
+      const res = await restorePrunedPageDom(mockPage)
+      assert.equal(res, 7)
+    })
+
+    it("prunePageDom evaluation logic dynamically restores off-screen cards when scrolled into viewport buffer", async () => {
+      // Mock DOM environment to test the exact page.evaluate logic
+      const elements: any[] = []
+
+      // Card 1: Was previously pruned as off-screen, now scrolled into active viewport (bottom: 300, top: 100)
+      const card1Attributes: Record<string, string> = {
+        "data-pruned-offscreen": "true",
+        "data-stagehand-original-aria-hidden": "__none__",
+        "aria-hidden": "true",
+      }
+      const card1 = {
+        tagName: "ARTICLE",
+        getAttribute: (k: string) => card1Attributes[k] || null,
+        setAttribute: (k: string, v: string) => { card1Attributes[k] = v },
+        removeAttribute: (k: string) => { delete card1Attributes[k] },
+        hasAttribute: (k: string) => k in card1Attributes,
+        getBoundingClientRect: () => ({ bottom: 300, top: 100, width: 400, height: 200 }),
+        textContent: "Stripe - Staff Backend Engineer",
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      }
+
+      // Card 2: Far off-screen below viewport (bottom: 3500, top: 3200)
+      const card2Attributes: Record<string, string> = {}
+      const card2 = {
+        tagName: "ARTICLE",
+        getAttribute: (k: string) => card2Attributes[k] || null,
+        setAttribute: (k: string, v: string) => { card2Attributes[k] = v },
+        removeAttribute: (k: string) => { delete card2Attributes[k] },
+        hasAttribute: (k: string) => k in card2Attributes,
+        getBoundingClientRect: () => ({ bottom: 3500, top: 3200, width: 400, height: 300 }),
+        textContent: "WidgetCorp - Intern",
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      }
+
+      elements.push(card1, card2)
+
+      // Test page evaluate function directly
+      const mockPage = {
+        evaluate: async (fn: any, args: any) => {
+          // Provide mock browser environment for fn
+          const origWindow = (global as any).window
+          const origDocument = (global as any).document
+          try {
+            (global as any).window = { innerHeight: 900, location: { origin: "https://wellfound.com" } }
+            ;(global as any).document = {
+              querySelectorAll: (sel: string) => {
+                if (sel === '[data-pruned-offscreen="true"]') {
+                  return elements.filter((el) => el.hasAttribute("data-pruned-offscreen"))
+                }
+                if (sel.includes("article")) {
+                  return elements
+                }
+                return []
+              },
+            }
+
+            return await fn(args)
+          } finally {
+            ;(global as any).window = origWindow
+            ;(global as any).document = origDocument
+          }
+        },
+      }
+
+      const res = await prunePageDom(mockPage, {
+        processedJobs: [{ company: "Stripe", role: "Frontend Engineer" }],
+      })
+
+      // Card 1 should have been RESTORED (aria-hidden removed, data-pruned-offscreen removed)
+      assert.equal(card1.getAttribute("aria-hidden"), null)
+      assert.equal(card1.hasAttribute("data-pruned-offscreen"), false)
+      assert.equal(card1.hasAttribute("data-stagehand-original-aria-hidden"), false)
+
+      // Card 2 should have been PRUNED as off-screen
+      assert.equal(card2.getAttribute("aria-hidden"), "true")
+      assert.equal(card2.getAttribute("data-pruned-offscreen"), "true")
+
+      assert.equal(res.restoredCount, 1)
+      assert.equal(res.prunedCount, 1)
+    })
+
+    it("prunePageDom masks ONLY the specific applied role and leaves other roles at the same company discoverable", async () => {
+      const elements: any[] = []
+
+      // Role A at Stripe: Senior Frontend Engineer (already applied)
+      const cardAAttributes: Record<string, string> = {}
+      const cardA = {
+        tagName: "ARTICLE",
+        getAttribute: (k: string) => cardAAttributes[k] || null,
+        setAttribute: (k: string, v: string) => { cardAAttributes[k] = v },
+        removeAttribute: (k: string) => { delete cardAAttributes[k] },
+        hasAttribute: (k: string) => k in cardAAttributes,
+        getBoundingClientRect: () => ({ bottom: 400, top: 100, width: 400, height: 300 }),
+        textContent: "Stripe - Senior Frontend Engineer (San Francisco, CA)",
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      }
+
+      // Role B at Stripe: Staff Backend Engineer (unapplied, different role!)
+      const cardBAttributes: Record<string, string> = {}
+      const cardB = {
+        tagName: "ARTICLE",
+        getAttribute: (k: string) => cardBAttributes[k] || null,
+        setAttribute: (k: string, v: string) => { cardBAttributes[k] = v },
+        removeAttribute: (k: string) => { delete cardBAttributes[k] },
+        hasAttribute: (k: string) => k in cardBAttributes,
+        getBoundingClientRect: () => ({ bottom: 750, top: 450, width: 400, height: 300 }),
+        textContent: "Stripe - Staff Backend Engineer (Remote)",
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      }
+
+      elements.push(cardA, cardB)
+
+      const mockPage = {
+        evaluate: async (fn: any, args: any) => {
+          const origWindow = (global as any).window
+          const origDocument = (global as any).document
+          try {
+            (global as any).window = { innerHeight: 900, location: { origin: "https://wellfound.com" } }
+            ;(global as any).document = {
+              querySelectorAll: (sel: string) => {
+                if (sel === '[data-pruned-offscreen="true"]') return []
+                if (sel.includes("article")) return elements
+                return []
+              },
+            }
+            return await fn(args)
+          } finally {
+            ;(global as any).window = origWindow
+            ;(global as any).document = origDocument
+          }
+        },
+      }
+
+      // User already applied to "Senior Frontend Engineer" at Stripe
+      const res = await prunePageDom(mockPage, {
+        processedJobs: [
+          { company: "Stripe", role: "Senior Frontend Engineer" },
+        ],
+      })
+
+      // Role A (Frontend) MUST be pruned/hidden
+      assert.equal(cardA.getAttribute("aria-hidden"), "true")
+      assert.equal(cardA.getAttribute("data-pruned-processed"), "true")
+
+      // Role B (Backend) MUST NOT be hidden! It remains completely discoverable!
+      assert.equal(cardB.getAttribute("aria-hidden"), null)
+      assert.equal(cardB.hasAttribute("data-pruned-processed"), false)
+
+      assert.equal(res.prunedCount, 1)
+    })
+
+    it("prunePageDom does NOT mask all company cards if only company name is provided without role/url/id", async () => {
+      const elements: any[] = []
+
+      const card1Attributes: Record<string, string> = {}
+      const card1 = {
+        tagName: "ARTICLE",
+        getAttribute: (k: string) => card1Attributes[k] || null,
+        setAttribute: (k: string, v: string) => { card1Attributes[k] = v },
+        removeAttribute: (k: string) => { delete card1Attributes[k] },
+        hasAttribute: (k: string) => k in card1Attributes,
+        getBoundingClientRect: () => ({ bottom: 300, top: 100, width: 400, height: 200 }),
+        textContent: "Stripe - Distributed Systems Engineer",
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      }
+      elements.push(card1)
+
+      const mockPage = {
+        evaluate: async (fn: any, args: any) => {
+          const origWindow = (global as any).window
+          const origDocument = (global as any).document
+          try {
+            (global as any).window = { innerHeight: 900, location: { origin: "https://wellfound.com" } }
+            ;(global as any).document = {
+              querySelectorAll: (sel: string) => {
+                if (sel === '[data-pruned-offscreen="true"]') return []
+                if (sel.includes("article")) return elements
+                return []
+              },
+            }
+            return await fn(args)
+          } finally {
+            ;(global as any).window = origWindow
+            ;(global as any).document = origDocument
+          }
+        },
+      }
+
+      // If only company name is given without specific role or URL or ID
+      const res = await prunePageDom(mockPage, {
+        processedJobs: [{ company: "Stripe" }],
+      })
+
+      // Card must NOT be hidden
+      assert.equal(card1.getAttribute("aria-hidden"), null)
+      assert.equal(res.prunedCount, 0)
     })
   })
 

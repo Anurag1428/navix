@@ -2,6 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand"
 import { z } from "zod"
 import type { StepNodeType } from "@/features/workflows/nodes/node-registry"
 import type { RunStep } from "@/features/workflows/tasks/run-workflow"
+import { prunePageDom } from "./agent.ts"
 
 export type VerificationOutcomeStatus =
     | "achieved"
@@ -304,8 +305,28 @@ export async function verifyNode(params: VerifyNodeParams): Promise<VerifyNodeRe
         // B. Semantic Custom Criterion Evaluation
         if (stagehand) {
             try {
-                const extractResult = await stagehand.extract(
-                    `You are an objective auditor verifying whether the following custom criterion has been achieved on the current page:
+                let customOptions: any = undefined
+                if (page) {
+                    const pruneResult = await prunePageDom(page)
+                    try {
+                        if (pruneResult.hasOpenDialog) {
+                            customOptions = {
+                                locator: page.locator('[data-stagehand-active-dialog="true"]'),
+                            }
+                        } else {
+                            customOptions = {
+                                ignoreLocators: [
+                                    page.locator("header"),
+                                    page.locator("footer"),
+                                    page.locator("nav"),
+                                    page.locator('[aria-hidden="true"]'),
+                                ],
+                            }
+                        }
+                    } catch {}
+                }
+
+                const customPrompt = `You are an objective auditor verifying whether the following custom criterion has been achieved on the current page:
 Criterion to verify: "${customCriterion}"
 ${expectedText ? `Additional expected text required: "${expectedText}"` : ""}
 Current URL: ${resolvedUrl}
@@ -316,9 +337,25 @@ Determine whether the criterion is verified/satisfied:
 - "achieved": The criterion is clearly satisfied with concrete proof on the page.
 - "not_achieved": The criterion is clearly not met or an error message/validation failure is visible.
 - "unverified": The evidence is insufficient or ambiguous to establish whether the criterion is satisfied.
-- "blocked": A CAPTCHA, login gate, or security challenge blocks the page.`,
-                    VerificationAuditorSchema
-                )
+- "blocked": A CAPTCHA, login gate, or security challenge blocks the page.`
+
+                let extractResult: any = undefined
+                try {
+                    extractResult = await stagehand.extract(
+                        customPrompt,
+                        VerificationAuditorSchema,
+                        customOptions
+                    )
+                } catch (cOptErr) {
+                    if (customOptions) {
+                        extractResult = await stagehand.extract(
+                            customPrompt,
+                            VerificationAuditorSchema
+                        )
+                    } else {
+                        throw cOptErr
+                    }
+                }
 
                 if (extractResult?.data) {
                     const status = extractResult.data.status
@@ -406,8 +443,28 @@ Determine whether the criterion is verified/satisfied:
 
     // Execute semantic auditing against the inferred goal and live page state
     try {
-        const auditResult = await stagehand.extract(
-            `You are an objective auditor evaluating whether the user's task was successfully accomplished on this web page.
+        let auditOptions: any = undefined
+        if (page) {
+            const pruneResult = await prunePageDom(page)
+            try {
+                if (pruneResult.hasOpenDialog) {
+                    auditOptions = {
+                        locator: page.locator('[data-stagehand-active-dialog="true"]'),
+                    }
+                } else {
+                    auditOptions = {
+                        ignoreLocators: [
+                            page.locator("header"),
+                            page.locator("footer"),
+                            page.locator("nav"),
+                            page.locator('[aria-hidden="true"]'),
+                        ],
+                    }
+                }
+            } catch {}
+        }
+
+        const auditPrompt = `You are an objective auditor evaluating whether the user's task was successfully accomplished on this web page.
 Goal / Task inferred from workflow: "${goal}"
 Upstream execution results: "${combinedUpstreamContext}"
 Current page URL: ${resolvedUrl}
@@ -420,9 +477,25 @@ Determine whether the goal was genuinely achieved:
 - "unverified": The evidence is insufficient, ambiguous, or incomplete to confirm success or failure. Do NOT assume success without real evidence.
 - "blocked": The page is halted by a CAPTCHA, login gate, or security challenge.
 
-Provide clear proof/evidence from the page and a plain-English summary.`,
-            VerificationAuditorSchema
-        )
+Provide clear proof/evidence from the page and a plain-English summary.`
+
+        let auditResult: any = undefined
+        try {
+            auditResult = await stagehand.extract(
+                auditPrompt,
+                VerificationAuditorSchema,
+                auditOptions
+            )
+        } catch (aOptErr) {
+            if (auditOptions) {
+                auditResult = await stagehand.extract(
+                    auditPrompt,
+                    VerificationAuditorSchema
+                )
+            } else {
+                throw aOptErr
+            }
+        }
 
         if (auditResult?.data) {
             const status = auditResult.data.status
