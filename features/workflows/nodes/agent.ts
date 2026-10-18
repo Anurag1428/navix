@@ -77,6 +77,320 @@ export function isSubmitAction(instruction?: string): boolean {
     return /(?:click|submit|press).*(?:apply|send application|application)/i.test(instruction)
 }
 
+export function isCloseAction(instruction?: string): boolean {
+    if (!instruction || typeof instruction !== "string") return false
+    return /(?:close|dismiss|backtrack|exit|return to (?:the )?job listings).*(?:modal|drawer|dialog|button|'✕'|'Close')|click.*(?:close button|'✕'|'Close')/i.test(
+        instruction
+    )
+}
+
+export function isScrollAction(instruction?: string): boolean {
+    if (!instruction || typeof instruction !== "string") return false
+    return /scroll\s+(?:down|up|the\s+page)/i.test(instruction)
+}
+
+/**
+ * Mechanical Action Dispatcher:
+ * Executes deterministic, unambiguous browser actions (close modal, scroll)
+ * directly via Playwright locators — bypassing stagehand.act() entirely.
+ *
+ * This is the core token-saving mechanism: stagehand.act() sends the full
+ * ~17k-token page accessibility tree to the LLM just to find a close button
+ * or scroll the page. For these predictable actions we can resolve the element
+ * in code at zero token cost.
+ *
+ * Returns { handled: true, success: true } ONLY after verifying the action
+ * actually took effect. Returns { handled: false } in ALL uncertain or failed
+ * cases so the caller falls through to stagehand.act().
+ */
+export async function tryMechanicalAction(
+    page: any,
+    instruction: string
+): Promise<{ handled: boolean; success: boolean; message: string }> {
+    const NOT_HANDLED = { handled: false, success: false, message: "" }
+
+    if (!page || !instruction) return NOT_HANDLED
+
+    // ── CLOSE / DISMISS ──────────────────────────────────────────────────────
+    if (isCloseAction(instruction)) {
+        try {
+            const currentUrl: string = typeof page.url === "function" ? await page.url() : ""
+            const hasJobListingSlug = currentUrl.includes("job_listing_slug")
+
+            // Pre-action dialog census:
+            // Count matching dialog/drawer elements BEFORE we act.
+            const dialogsBefore: number = await page
+                .evaluate(() =>
+                    document.querySelectorAll(
+                        '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [data-test*="drawer" i], [class*="styles_drawer" i]'
+                    ).length
+                )
+                .catch(() => -1)
+
+            if (dialogsBefore <= 0 && !hasJobListingSlug) {
+                // 0 = ambiguous (no selector match); -1 = evaluate threw.
+                // Either way fall through to stagehand.act().
+                return NOT_HANDLED
+            }
+
+            // Step 1: Escape key — fastest on Wellfound drawers
+            if (typeof page.keyPress === "function") {
+                await page.keyPress("Escape")
+            } else if (page.keyboard && typeof page.keyboard.press === "function") {
+                await page.keyboard.press("Escape")
+            }
+
+            // Step 2: Poll for closure, tolerating CSS fade-out animations.
+            const POLL_MS = 150
+            const BUDGET_MS = 600
+            let goneAfterEscape = false
+            const t1 = Date.now()
+
+            while (Date.now() - t1 < BUDGET_MS) {
+                await new Promise((r) => setTimeout(r, POLL_MS))
+                const activeUrl: string = typeof page.url === "function" ? await page.url() : ""
+                const slugGone = hasJobListingSlug && !activeUrl.includes("job_listing_slug")
+                const remaining: number = await page
+                    .evaluate(() =>
+                        document.querySelectorAll(
+                            '[role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [data-test*="JobListingDrawer"]:not([hidden]), [class*="styles_drawer" i]:not([hidden])'
+                        ).length
+                    )
+                    .catch(() => (hasJobListingSlug ? 0 : dialogsBefore))
+                if (slugGone || remaining === 0) {
+                    goneAfterEscape = true
+                    break
+                }
+            }
+
+            if (goneAfterEscape) {
+                return {
+                    handled: true,
+                    success: true,
+                    message: "Modal closed via mechanical Escape key (no LLM call)",
+                }
+            }
+
+            // Step 3: Escape alone didn't close it — click the DOM close button
+            await page.evaluate(() => {
+                const dialog = document.querySelector<HTMLElement>(
+                    '[role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [data-test*="JobListingDrawer"], [class*="styles_drawer" i], aside'
+                )
+                const searchRoot = dialog || document.body
+
+                const candidates = Array.from(
+                    searchRoot.querySelectorAll<HTMLElement>('button, [role="button"], a[role="button"]')
+                )
+
+                // 1. Accessibility attributes (aria-label, title, data-testid, data-test)
+                let btn = candidates.find((el) => {
+                    const attrs = (
+                        (el.getAttribute("aria-label") || "") + " " +
+                        (el.getAttribute("title") || "") + " " +
+                        (el.getAttribute("data-test") || "") + " " +
+                        (el.getAttribute("data-testid") || "")
+                    ).toLowerCase()
+                    return attrs.includes("close") || attrs.includes("dismiss")
+                })
+
+                // 2. Real DOM text matching (tolerates ✕, ×, X, Close, Dismiss)
+                if (!btn) {
+                    btn = candidates.find((el) => {
+                        const text = (el.textContent || "").trim()
+                        return (
+                            text === "✕" ||
+                            text === "×" ||
+                            text === "X" ||
+                            text.toLowerCase() === "close" ||
+                            text.toLowerCase() === "dismiss"
+                        )
+                    })
+                }
+
+                // 3. SVG icon close buttons (SVG with 'x' or 'close' in class or aria)
+                if (!btn) {
+                    btn = candidates.find((el) => {
+                        const svg = el.querySelector("svg")
+                        if (!svg) return false
+                        const svgClass = (svg.getAttribute("class") || "").toLowerCase()
+                        const svgAria = (svg.getAttribute("aria-label") || "").toLowerCase()
+                        return svgClass.includes("close") || svgClass.includes("x") || svgAria.includes("close")
+                    })
+                }
+
+                // 4. Fallback to first button inside dialog if explicitly scoped
+                if (!btn && dialog) {
+                    btn = candidates[0]
+                }
+
+                if (btn) btn.click()
+            })
+
+            // Step 4: Poll again after DOM button click
+            let goneAfterClick = false
+            const t2 = Date.now()
+
+            while (Date.now() - t2 < BUDGET_MS) {
+                await new Promise((r) => setTimeout(r, POLL_MS))
+                const activeUrl: string = typeof page.url === "function" ? await page.url() : ""
+                const slugGone = hasJobListingSlug && !activeUrl.includes("job_listing_slug")
+                const remaining: number = await page
+                    .evaluate(() =>
+                        document.querySelectorAll(
+                            '[role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [data-test*="JobListingDrawer"]:not([hidden]), [class*="styles_drawer" i]:not([hidden])'
+                        ).length
+                    )
+                    .catch(() => (hasJobListingSlug ? 0 : dialogsBefore))
+                if (slugGone || remaining === 0) {
+                    goneAfterClick = true
+                    break
+                }
+            }
+
+            if (goneAfterClick) {
+                return {
+                    handled: true,
+                    success: true,
+                    message: "Modal closed via mechanical DOM button click (no LLM call)",
+                }
+            }
+
+            // Step 5: If job_listing_slug is still active in the URL, dismiss it via history navigation
+            if (hasJobListingSlug) {
+                const activeUrl: string = typeof page.url === "function" ? await page.url() : ""
+                if (activeUrl.includes("job_listing_slug")) {
+                    await page.evaluate(() => {
+                        const u = new URL(window.location.href)
+                        u.searchParams.delete("job_listing_slug")
+                        window.history.pushState({}, "", u.toString())
+                        window.dispatchEvent(new PopStateEvent("popstate"))
+                    }).catch(() => {})
+
+                    const urlAfterPush: string = typeof page.url === "function" ? await page.url() : ""
+                    if (urlAfterPush.includes("job_listing_slug")) {
+                        const cleanUrl = currentUrl.replace(/[?&]job_listing_slug=[^&#]+/, "").replace(/\?$/, "")
+                        if (cleanUrl && typeof page.goto === "function") {
+                            await page.goto(cleanUrl, { waitUntil: "domcontentloaded" }).catch(() => {})
+                        }
+                    }
+                    return {
+                        handled: true,
+                        success: true,
+                        message: "Job drawer closed via URL cleanup (no LLM call)",
+                    }
+                }
+            }
+
+            // Step 6: All attempts failed verification — fall through to stagehand.act()
+            return NOT_HANDLED
+        } catch {
+            // Any unexpected exception — let stagehand.act() handle it
+            return NOT_HANDLED
+        }
+    }
+
+    // ── SCROLL DOWN ──────────────────────────────────────────────────────────
+    if (/scroll\s+down/i.test(instruction)) {
+        try {
+            const scrollStateBefore = await page
+                .evaluate(() => ({
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    innerHeight: window.innerHeight,
+                }))
+                .catch(() => null)
+
+            if (!scrollStateBefore) return NOT_HANDLED
+
+            const isAlreadyAtBottom =
+                scrollStateBefore.innerHeight + scrollStateBefore.scrollY >=
+                scrollStateBefore.scrollHeight - 50
+
+            await page.evaluate(() => window.scrollBy({ top: 800, behavior: "smooth" }))
+
+            // Poll up to 500ms for scrollY to actually increase
+            let scrolled = false
+            const t = Date.now()
+            while (Date.now() - t < 500) {
+                await new Promise((r) => setTimeout(r, 100))
+                const scrollYAfter: number = await page
+                    .evaluate(() => window.scrollY)
+                    .catch(() => scrollStateBefore.scrollY)
+                if (scrollYAfter > scrollStateBefore.scrollY) {
+                    scrolled = true
+                    break
+                }
+            }
+
+            if (!scrolled) {
+                const isNowAtBottom = await page
+                    .evaluate(
+                        () =>
+                            window.innerHeight + window.scrollY >=
+                            document.documentElement.scrollHeight - 50
+                    )
+                    .catch(() => false)
+
+                if (isAlreadyAtBottom || isNowAtBottom) {
+                    return {
+                        handled: true,
+                        success: true,
+                        message: "Page is at the bottom; no further listings to scroll to.",
+                    }
+                }
+                return NOT_HANDLED
+            }
+
+            return {
+                handled: true,
+                success: true,
+                message: "Scrolled down via mechanical Playwright call (no LLM call)",
+            }
+        } catch {
+            return NOT_HANDLED
+        }
+    }
+
+    // ── SCROLL UP ────────────────────────────────────────────────────────────
+    if (/scroll\s+up/i.test(instruction)) {
+        try {
+            const scrollYBefore: number = await page
+                .evaluate(() => window.scrollY)
+                .catch(() => -1)
+
+            if (scrollYBefore === -1) return NOT_HANDLED
+
+            await page.evaluate(() => window.scrollBy({ top: -800, behavior: "smooth" }))
+
+            // Poll up to 500ms for scrollY to actually decrease
+            let scrolled = false
+            const t = Date.now()
+            while (Date.now() - t < 500) {
+                await new Promise((r) => setTimeout(r, 100))
+                const scrollYAfter: number = await page
+                    .evaluate(() => window.scrollY)
+                    .catch(() => scrollYBefore)
+                if (scrollYAfter < scrollYBefore) {
+                    scrolled = true
+                    break
+                }
+            }
+
+            if (!scrolled) return NOT_HANDLED
+
+            return {
+                handled: true,
+                success: true,
+                message: "Scrolled up via mechanical Playwright call (no LLM call)",
+            }
+        } catch {
+            return NOT_HANDLED
+        }
+    }
+
+    return NOT_HANDLED
+}
+
 export function getGenuineSubmissions(mem: AgentWorkingMemory): JobMemoryEntry[] {
     const submissions: JobMemoryEntry[] = []
     const seen = new Set<string>()
@@ -750,12 +1064,22 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             lastStep.success &&
             isSubmitAction(lastStep.instruction)
 
-        if (isCurrentActionSubmit && wasLastStepSubmit) {
-            logger.info(
-                "[Agent] Intercepted duplicate submit click: closing dialog to return to job listings instead of looping."
-            )
-            decision.instruction =
-                "click the close button '✕' or 'Close' on the modal to return to the job listings"
+        // ── Mechanical Action Dispatch (zero-token path) ─────────────────────
+        const mechanicalPage = await stagehand.browser.context.activePage()
+        if (mechanicalPage) {
+            const mechanical = await tryMechanicalAction(mechanicalPage, decision.instruction)
+            if (mechanical.handled && mechanical.success) {
+                logger.info(
+                    `[Agent] Mechanical action verified (no LLM call): ${mechanical.message}`,
+                    { instruction: decision.instruction }
+                )
+                mem.history.push({
+                    instruction: decision.instruction,
+                    success: true,
+                    message: mechanical.message,
+                })
+                continue
+            }
         }
 
         const actResult = await stagehand.act(decision.instruction)

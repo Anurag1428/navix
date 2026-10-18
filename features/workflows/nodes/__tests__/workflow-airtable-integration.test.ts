@@ -16,6 +16,7 @@ import {
   getGenuineSubmissions,
   getAgentWorkingMemory,
   clearAgentWorkingMemory,
+  tryMechanicalAction,
 } from "../agent.ts"
 
 import {
@@ -746,6 +747,53 @@ describe("Workflow × Airtable Integration Points", () => {
       const avyam = extracted.filter((j) => j.company === "AVYAM LABS")
       assert.equal(avyam.length, 1)
       assert.equal(avyam[0].status, "Application Attempted")
+    })
+  })
+
+  // ── 10. Drawer Dismissal via Mechanical Action ───────────────────────────
+  describe("10. Drawer Dismissal via Mechanical Action", () => {
+    it("tryMechanicalAction handles job_listing_slug URL dismissal", async () => {
+      let currentUrl = "https://wellfound.com/jobs?job_listing_slug=4840021-test-role"
+      let escapePressed = false
+      let popStateDispatched = false
+
+      const mockPage = {
+        url: async () => currentUrl,
+        evaluate: async (fn: any) => {
+          const fnStr = fn.toString()
+          if (fnStr.includes("JobListingDrawer") || fnStr.includes("dialog")) {
+            return 1
+          }
+          if (fnStr.includes("delete") && fnStr.includes("job_listing_slug")) {
+            currentUrl = "https://wellfound.com/jobs"
+            popStateDispatched = true
+          }
+        },
+        keyPress: async (key: string) => {
+          if (key === "Escape") {
+            escapePressed = true
+            currentUrl = "https://wellfound.com/jobs"
+          }
+        },
+        keyboard: {
+          press: async (key: string) => {
+            if (key === "Escape") {
+              escapePressed = true
+              currentUrl = "https://wellfound.com/jobs"
+            }
+          },
+        },
+      }
+
+      const result = await tryMechanicalAction(
+        mockPage,
+        "click the close button '✕' or 'Close' on the modal to return to the job listings"
+      )
+
+      assert.equal(result.handled, true)
+      assert.equal(result.success, true)
+      assert.match(result.message, /Modal closed via mechanical Escape key/)
+      assert.equal(escapePressed, true)
     })
   })
 })
