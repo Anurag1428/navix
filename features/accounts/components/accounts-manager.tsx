@@ -33,6 +33,12 @@ const PLATFORMS = [
     desc: "Startup tech jobs, frontend, fullstack & remote roles",
   },
   {
+    id: "workatastartup",
+    name: "YC (Work at a Startup)",
+    defaultUrl: "https://www.workatastartup.com",
+    desc: "Y Combinator-backed startups, founder outreach & jobs",
+  },
+  {
     id: "linkedin",
     name: "LinkedIn",
     defaultUrl: "https://www.linkedin.com/login",

@@ -129,6 +129,7 @@ export const runWorkflowTask = task({
         let sessionId: string | undefined
         let localPlaywrightContext: PlaywrightContext | undefined
         let localRecordingsDir: string | undefined
+        const sessionVideoFiles: { path: string; birthTime: number }[] = []
 
         const getStagehand = async (): Promise<Stagehand> => {
             if (stagehand) {
@@ -197,6 +198,7 @@ export const runWorkflowTask = task({
                             return (
                                 targetUrls.includes(plat) ||
                                 (plat === "wellfound" && (targetUrls.includes("wellfound") || targetUrls.includes("angel.co"))) ||
+                                ((plat === "workatastartup" || plat === "yc") && (targetUrls.includes("workatastartup") || targetUrls.includes("ycombinator"))) ||
                                 (plat === "linkedin" && targetUrls.includes("linkedin"))
                             )
                         })
@@ -250,6 +252,75 @@ export const runWorkflowTask = task({
                 } catch (traceErr) {
                     logger.warn("Failed to start tracing", { error: String(traceErr) })
                 }
+
+                // ── Multi-Tab & Foreground Sync Management ──────────────────────────────
+                // Allows natural multi-tab workflows (such as YC Work at a Startup target="_blank" links)
+                // while ensuring:
+                // 1) The active page is brought to front and synchronized with Stagehand.
+                // 2) All tab video files created throughout the run are tracked for end-of-run stitching.
+                for (const initialPage of localPlaywrightContext.pages()) {
+                    const v = initialPage.video()
+                    if (v) {
+                        const initTime = workflowStartTime
+                        v.path().then((vp) => {
+                            if (vp && !sessionVideoFiles.some((s) => s.path === vp)) {
+                                sessionVideoFiles.push({ path: vp, birthTime: initTime })
+                            }
+                        }).catch(() => {})
+                        initialPage.on("close", async () => {
+                            try {
+                                const vp = await v.path().catch(() => undefined)
+                                if (vp && !sessionVideoFiles.some((s) => s.path === vp)) {
+                                    sessionVideoFiles.push({ path: vp, birthTime: initTime })
+                                }
+                            } catch {}
+                        })
+                    }
+                }
+
+                localPlaywrightContext.on("page", async (newPage) => {
+                    const openTime = Date.now()
+                    try {
+                        await newPage.bringToFront().catch(() => {})
+                        if (stagehand) {
+                            const shPages = await stagehand.browser.context.pages().catch(() => [])
+                            if (shPages.length > 0) {
+                                await stagehand.browser.context.setActivePage(shPages[shPages.length - 1]).catch(() => {})
+                            }
+                        }
+
+                        const v = newPage.video()
+                        if (v) {
+                            v.path().then((vp) => {
+                                if (vp && !sessionVideoFiles.some((s) => s.path === vp)) {
+                                    sessionVideoFiles.push({ path: vp, birthTime: openTime })
+                                }
+                            }).catch(() => {})
+
+                            newPage.on("close", async () => {
+                                try {
+                                    const vp = await v.path().catch(() => undefined)
+                                    if (vp && !sessionVideoFiles.some((s) => s.path === vp)) {
+                                        sessionVideoFiles.push({ path: vp, birthTime: openTime })
+                                    }
+                                    const remaining = localPlaywrightContext?.pages() || []
+                                    const fallback = remaining[remaining.length - 1] || remaining[0]
+                                    if (fallback) {
+                                        await fallback.bringToFront().catch(() => {})
+                                        if (stagehand) {
+                                            const shPages = await stagehand.browser.context.pages().catch(() => [])
+                                            if (shPages.length > 0) {
+                                                await stagehand.browser.context.setActivePage(shPages[0]).catch(() => {})
+                                            }
+                                        }
+                                    }
+                                } catch {}
+                            })
+                        }
+                    } catch (tabErr) {
+                        logger.warn("[Browser] Tab sync warning", { error: String(tabErr) })
+                    }
+                })
 
                 const stagehandBrowser = await localBrowser.connect({
                     cdpUrl: `http://127.0.0.1:${port}`,
@@ -666,38 +737,142 @@ export const runWorkflowTask = task({
                         }
                     }
 
-                    // 2. Obtain path to recorded video before closing context
-                    let videoPath: string | undefined
+                    // 2. Obtain paths to all recorded videos across still-open pages before closing context
                     for (const page of localPlaywrightContext.pages()) {
                         try {
                             const v = page.video()
                             if (v) {
-                                videoPath = await v.path()
-                                break
+                                const p = await v.path().catch(() => undefined)
+                                if (p && !sessionVideoFiles.some((s) => s.path === p)) {
+                                    sessionVideoFiles.push({ path: p, birthTime: workflowStartTime })
+                                }
                             }
                         } catch {
                             // ignore
                         }
                     }
 
-                    // 3. Close Playwright context (this flushes the .webm video file to disk)
+                    // 3. Close Playwright context (this flushes all .webm video file(s) to disk)
                     await localPlaywrightContext.close()
 
-                    // 4. Rename the video to deterministic name: ${runId}.webm
-                    if (videoPath && fs.existsSync(videoPath) && localRecordingsDir) {
-                        const targetPath = path.join(localRecordingsDir, `${runId}.webm`)
-                        try {
-                            if (fs.existsSync(targetPath)) {
-                                fs.unlinkSync(targetPath)
-                            }
-                            fs.renameSync(videoPath, targetPath)
+                    // 4. Gather all unique valid video files created during this run (from tracked tabs and disk)
+                    const recDir = localRecordingsDir
+                    const diskVideos = recDir
+                        ? fs.readdirSync(recDir)
+                              .filter((f) => f.startsWith("page@") && f.endsWith(".webm"))
+                              .map((f) => path.join(recDir, f))
+                              .filter((p) => {
+                                  try {
+                                      const st = fs.statSync(p)
+                                      return st.size > 1000 && st.mtimeMs >= workflowStartTime - 5000
+                                  } catch {
+                                      return false
+                                  }
+                              })
+                        : []
+
+                    const uniquePaths = Array.from(
+                        new Set([...sessionVideoFiles.map((s) => s.path), ...diskVideos])
+                    ).filter((p) => fs.existsSync(p) && fs.statSync(p).size > 1000)
+
+                    const birthMap = new Map<string, number>()
+                    for (const item of sessionVideoFiles) {
+                        birthMap.set(path.resolve(item.path), item.birthTime)
+                    }
+
+                    // Sort chronologically by tab creation time (or file timestamp as fallback)
+                    const sortedVideos = uniquePaths.sort((a, b) => {
+                        const tA = birthMap.get(path.resolve(a)) ?? fs.statSync(a).birthtimeMs ?? fs.statSync(a).mtimeMs
+                        const tB = birthMap.get(path.resolve(b)) ?? fs.statSync(b).birthtimeMs ?? fs.statSync(b).mtimeMs
+                        return tA - tB
+                    })
+
+                    if (recDir) {
+                        const targetPath = path.join(recDir, `${runId}.webm`)
+
+                        if (sortedVideos.length === 1) {
+                            // Single tab video — rename directly
+                            const single = sortedVideos[0]
+                            if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath)
+                            fs.renameSync(single, targetPath)
                             logger.info(`Saved local video replay to ${targetPath}`)
-                        } catch (renameErr) {
-                            logger.warn("Failed to rename video replay file", {
-                                from: videoPath,
-                                to: targetPath,
-                                error: String(renameErr),
-                            })
+                        } else if (sortedVideos.length > 1) {
+                            // Multiple tab video segments — stitch chronologically via ffmpeg
+                            let stitched = false
+                            try {
+                                // Resolve ffmpeg-static binary robustly (handles Trigger.dev bundle & node_modules)
+                                const candidatePaths = [
+                                    path.join(process.cwd(), "node_modules", "ffmpeg-static", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
+                                    path.resolve(__dirname, "..", "..", "..", "node_modules", "ffmpeg-static", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
+                                    path.resolve("D:\\navix", "node_modules", "ffmpeg-static", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
+                                ]
+                                let resolvedFfmpegPath: string | undefined = candidatePaths.find((cand) => fs.existsSync(cand))
+                                if (!resolvedFfmpegPath) {
+                                    try {
+                                        const ffmpegModule = await import("ffmpeg-static")
+                                        const candidate = (ffmpegModule as any).default || ffmpegModule
+                                        if (typeof candidate === "string" && fs.existsSync(candidate)) {
+                                            resolvedFfmpegPath = candidate
+                                        }
+                                    } catch {}
+                                }
+
+                                if (resolvedFfmpegPath && fs.existsSync(resolvedFfmpegPath)) {
+                                    const { execFileSync } = await import("child_process")
+                                    const listPath = path.join(recDir, `concat_${runId}.txt`)
+                                    const listContent = sortedVideos
+                                        .map((p) => `file '${path.resolve(p).replace(/\\/g, "/")}'`)
+                                        .join("\n")
+                                    fs.writeFileSync(listPath, listContent)
+
+                                    if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath)
+
+                                    execFileSync(resolvedFfmpegPath, [
+                                        "-f", "concat",
+                                        "-safe", "0",
+                                        "-i", listPath,
+                                        "-c", "copy",
+                                        targetPath,
+                                        "-y",
+                                    ], { stdio: "pipe" })
+
+                                    if (fs.existsSync(listPath)) fs.unlinkSync(listPath)
+
+                                    if (fs.existsSync(targetPath) && fs.statSync(targetPath).size > 1000) {
+                                        stitched = true
+                                        logger.info(`Successfully stitched ${sortedVideos.length} tab recordings into ${targetPath}`)
+
+                                        // Clean up intermediate segment files only after verified stitching
+                                        for (const p of sortedVideos) {
+                                            if (path.resolve(p) !== path.resolve(targetPath) && fs.existsSync(p)) {
+                                                try { fs.unlinkSync(p) } catch {}
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (stitchErr) {
+                                logger.warn("FFmpeg stitching warning, falling back to largest video", {
+                                    error: String(stitchErr),
+                                })
+                            }
+
+                            // Fallback if stitching failed: pick largest video
+                            if (!stitched) {
+                                let bestVideoPath: string | undefined
+                                let maxSizeBytes = -1
+                                for (const p of sortedVideos) {
+                                    const sz = fs.statSync(p).size
+                                    if (sz > maxSizeBytes) {
+                                        maxSizeBytes = sz
+                                        bestVideoPath = p
+                                    }
+                                }
+                                if (bestVideoPath && fs.existsSync(bestVideoPath)) {
+                                    if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath)
+                                    fs.copyFileSync(bestVideoPath, targetPath)
+                                    logger.info(`Saved largest local video replay to ${targetPath} (segments preserved)`)
+                                }
+                            }
                         }
                     }
                 } catch (pwCleanupErr) {

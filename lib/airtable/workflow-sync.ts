@@ -168,6 +168,12 @@ export function isGenericSearchUrl(url?: string): boolean {
       }
     }
 
+    if (host.includes("workatastartup.com") || host.includes("ycombinator.com")) {
+      if (path === "/companies" || path === "/jobs" || path === "/all-jobs" || path === "/directory" || path === "" || path === "/") {
+        return true
+      }
+    }
+
     if (host.includes("linkedin.com")) {
       if (path === "/jobs" || path.startsWith("/jobs/search")) return true
     }
