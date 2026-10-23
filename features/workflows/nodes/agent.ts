@@ -10,6 +10,45 @@ import {
 
 const MAX_STEPS = 20
 
+// =========================================================================================
+// PLATFORM-SPECIFIC STRATEGY ARCHITECTURE
+// =========================================================================================
+// IMPORTANT NOTE ON ARCHITECTURE AND STABILITY:
+// Navix automates job applications across multiple distinct career platforms (Wellfound,
+// Y Combinator Work at a Startup, LinkedIn, etc.).
+//
+// Each platform has a completely different DOM structure, modal behavior, URL routing,
+// and application submission flow:
+//   - WELLFOUND: Uses slide-out drawers, URL query params (?job_listing_slug=...),
+//     custom dialog census, and specific escape-key dismissals.
+//     *** CRITICAL RULE ***:
+//     WELLFOUND LOGIC IS FULLY PROVEN AND WORKING. DO NOT CHANGE, EDIT, OR REFACTOR
+//     ANY WELLFOUND-SPECIFIC STRATEGY UNLESS SPECIFICALLY AND EXPLICITLY REQUESTED!
+//
+//   - YC (WORK AT A STARTUP): Uses company cards with nested roles, dedicated modal
+//     popups with note-to-founders textareas, breadcrumb navigation, and direct apply
+//     endpoints. Its rules and DOM handling are kept isolated in the YC strategy branch.
+//
+//   - OTHER / GENERIC: Standard fallback strategy for other platforms.
+//
+// Always keep platform-specific execution paths cleanly segregated so improvements to one
+// portal never regress or interfere with another portal.
+// =========================================================================================
+
+export type JobPlatform = "wellfound" | "yc" | "generic"
+
+export function detectJobPlatform(url?: string): JobPlatform {
+    if (!url || typeof url !== "string") return "generic"
+    const lower = url.toLowerCase()
+    if (lower.includes("wellfound.com") || lower.includes("angel.co")) {
+        return "wellfound"
+    }
+    if (lower.includes("workatastartup.com") || lower.includes("ycombinator.com")) {
+        return "yc"
+    }
+    return "generic"
+}
+
 export type JobMemoryEntry = {
     company: string
     role: string
@@ -103,8 +142,15 @@ export function isSubmitAction(instruction?: string): boolean {
 
 export function isCloseAction(instruction?: string): boolean {
     if (!instruction || typeof instruction !== "string") return false
-    return /(?:close|dismiss|backtrack|exit|return to (?:the )?job listings).*(?:modal|drawer|dialog|button|'✕'|'Close')|click.*(?:close button|'✕'|'Close')/i.test(
-        instruction
+    return (
+        /(?:close|dismiss|backtrack|exit|return to (?:the )?job listings).*(?:tab|modal|drawer|dialog|button|'✕'|'Close')|click.*(?:close button|'✕'|'Close')|close\s+tab/i.test(
+            instruction
+        ) ||
+        /(?:return|navigate|go\s+back|back)\s+to\s+(?:the\s+)?(?:job\s+listings|listings|directory|companies)/i.test(
+            instruction
+        ) ||
+        /click.*(?:'Companies'|breadcrumb).*return to/i.test(instruction) ||
+        /click.*'Companies'.*breadcrumb/i.test(instruction)
     )
 }
 
@@ -129,7 +175,9 @@ export function isScrollAction(instruction?: string): boolean {
  */
 export async function tryMechanicalAction(
     page: any,
-    instruction: string
+    instruction: string,
+    platformOverride?: JobPlatform,
+    stagehand?: any
 ): Promise<{ handled: boolean; success: boolean; message: string }> {
     const NOT_HANDLED = { handled: false, success: false, message: "" }
 
@@ -139,6 +187,221 @@ export async function tryMechanicalAction(
     if (isCloseAction(instruction)) {
         try {
             const currentUrl: string = typeof page.url === "function" ? await page.url() : ""
+            const platform = platformOverride || detectJobPlatform(currentUrl)
+
+            // =========================================================================
+            // PLATFORM STRATEGY: YC (WORK AT A STARTUP) CLOSE / BACKTRACK
+            // =========================================================================
+            if (platform === "yc") {
+                // 1. If job was opened in a separate tab, close the job tab and return to directory tab
+                try {
+                    if (stagehand?.browser?.context) {
+                        const shPages = await stagehand.browser.context.pages().catch(() => [])
+                        if (shPages.length > 1) {
+                            await page.close().catch(() => {})
+                            const remaining = await stagehand.browser.context.pages().catch(() => [])
+                            if (remaining.length > 0) {
+                                await stagehand.browser.context.setActivePage(remaining[0]).catch(() => {})
+                            }
+                            return {
+                                handled: true,
+                                success: true,
+                                message: "Closed YC job tab and switched to directory tab (no LLM call)",
+                            }
+                        }
+                    }
+                    const pwPage = (page as any).page || page
+                    const context = pwPage.context?.()
+                    if (context && typeof context.pages === "function") {
+                        const pages = context.pages()
+                        if (pages.length > 1 && pwPage !== pages[0]) {
+                            await pwPage.close().catch(() => {})
+                            const dirPage = pages[0]
+                            await dirPage.bringToFront().catch(() => {})
+                            return {
+                                handled: true,
+                                success: true,
+                                message: "Closed YC job tab and returned to directory (no LLM call)",
+                            }
+                        }
+                    }
+                } catch {}
+
+                // 2. Check for modal dialogs on YC
+                const ycDialogsBefore: number = await page
+                    .evaluate(() =>
+                        document.querySelectorAll(
+                            '[role="dialog"], [aria-modal="true"], .modal, [class*="modal" i], [class*="drawer" i]'
+                        ).length
+                    )
+                    .catch(() => 0)
+
+                if (ycDialogsBefore > 0) {
+                    // Try Escape key
+                    if (typeof page.keyPress === "function") {
+                        await page.keyPress("Escape")
+                    } else if (page.keyboard && typeof page.keyboard.press === "function") {
+                        await page.keyboard.press("Escape")
+                    }
+
+                    // Poll for modal closure
+                    let closed = false
+                    const t1 = Date.now()
+                    while (Date.now() - t1 < 600) {
+                        await new Promise((r) => setTimeout(r, 150))
+                        const remaining: number = await page
+                            .evaluate(() =>
+                                document.querySelectorAll(
+                                    '[role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), .modal:not([hidden])'
+                                ).length
+                            )
+                            .catch(() => 0)
+                        if (remaining === 0) {
+                            closed = true
+                            break
+                        }
+                    }
+
+                    if (closed) {
+                        return {
+                            handled: true,
+                            success: true,
+                            message: "YC modal closed via mechanical Escape key (no LLM call)",
+                        }
+                    }
+
+                    // Try clicking the DOM close button
+                    const clickedClose = await page
+                        .evaluate(() => {
+                            const dialog = document.querySelector<HTMLElement>('[role="dialog"], [aria-modal="true"], .modal')
+                            const root = dialog || document.body
+                            const candidates = Array.from(root.querySelectorAll<HTMLElement>('button, [role="button"], a[role="button"]'))
+
+                            const btn = candidates.find((el) => {
+                                const aria = (el.getAttribute("aria-label") || "").toLowerCase()
+                                const title = (el.getAttribute("title") || "").toLowerCase()
+                                const text = (el.textContent || "").trim()
+                                return (
+                                    aria.includes("close") ||
+                                    aria.includes("dismiss") ||
+                                    title.includes("close") ||
+                                    text === "✕" ||
+                                    text === "×" ||
+                                    text === "X" ||
+                                    text.toLowerCase() === "close" ||
+                                    text.toLowerCase() === "cancel"
+                                )
+                            })
+
+                            if (btn) {
+                                btn.click()
+                                return true
+                            }
+                            return false
+                        })
+                        .catch(() => false)
+
+                    if (clickedClose) {
+                        let closedAfterClick = false
+                        const t2 = Date.now()
+                        while (Date.now() - t2 < 600) {
+                            await new Promise((r) => setTimeout(r, 150))
+                            const remaining = await page
+                                .evaluate(() =>
+                                    document.querySelectorAll(
+                                        '[role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), .modal:not([hidden])'
+                                    ).length
+                                )
+                                .catch(() => 0)
+                            if (remaining === 0) {
+                                closedAfterClick = true
+                                break
+                            }
+                        }
+
+                        if (closedAfterClick) {
+                            return {
+                                handled: true,
+                                success: true,
+                                message: "YC modal closed via mechanical DOM close button (no LLM call)",
+                            }
+                        }
+                    }
+                }
+
+                // 3. Check if navigated into dedicated YC job page and returning to company directory
+                const isDedicatedYcJobPage = /\/jobs\/\d+|\/companies\/[^\/]+\/jobs/i.test(currentUrl)
+                if (isDedicatedYcJobPage) {
+                    const navigatedBack = await page
+                        .evaluate(() => {
+                            const links = Array.from(document.querySelectorAll<HTMLElement>('a, button'))
+                            const backEl = links.find((el) => {
+                                const txt = (el.textContent || "").toLowerCase().trim()
+                                const href = el.getAttribute("href") || ""
+                                return (
+                                    txt === "jobs" ||
+                                    txt === "companies" ||
+                                    txt.includes("companies") ||
+                                    txt.includes("back to jobs") ||
+                                    txt.includes("all companies") ||
+                                    txt.includes("all jobs") ||
+                                    href === "/jobs" ||
+                                    href.startsWith("/jobs?") ||
+                                    href === "/companies" ||
+                                    href.startsWith("/companies?") ||
+                                    href.startsWith("/directory")
+                                )
+                            })
+                            if (backEl) {
+                                backEl.click()
+                                return true
+                            }
+                            if (window.history.length > 1) {
+                                window.history.back()
+                                return true
+                            }
+                            return false
+                        })
+                        .catch(() => false)
+
+                    let returnedToListings = false
+                    if (navigatedBack) {
+                        const tNav = Date.now()
+                        while (Date.now() - tNav < 2000) {
+                            await new Promise((r) => setTimeout(r, 200))
+                            const activeUrl: string = typeof page.url === "function" ? await page.url() : ""
+                            if (!/\/jobs\/\d+/i.test(activeUrl)) {
+                                returnedToListings = true
+                                break
+                            }
+                        }
+                    }
+
+                    // Direct fallback: if still on the dedicated job page, navigate directly to listings
+                    if (!returnedToListings) {
+                        try {
+                            if (typeof page.goto === "function") {
+                                await page.goto("https://www.workatastartup.com/jobs", { waitUntil: "domcontentloaded" })
+                                returnedToListings = true
+                            }
+                        } catch {}
+                    }
+
+                    if (returnedToListings) {
+                        return {
+                            handled: true,
+                            success: true,
+                            message: "Navigated back from YC job detail page to listings (no LLM call)",
+                        }
+                    }
+                }
+
+                return NOT_HANDLED
+            }
+
+            // =========================================================================
+            // PLATFORM STRATEGY: WELLFOUND CLOSE (PROVEN - PRESERVED UNTOUCHED)
+            // =========================================================================
             const hasJobListingSlug = currentUrl.includes("job_listing_slug")
 
             // Pre-action dialog census:
@@ -1458,7 +1721,12 @@ export async function agentNode({
         const recentHistoryText = formatCompactRecentHistory(mem.history, 2)
         const workingMemoryText = formatCompactWorkingMemory(mem, currentPageUrl)
 
-        const plannerPrompt = `
+        const platform = detectJobPlatform(currentPageUrl)
+
+        // =========================================================================
+        // PLATFORM STRATEGY: WELLFOUND OPERATIONAL RULES (PROVEN - PRESERVED UNTOUCHED)
+        // =========================================================================
+        const wellfoundOperationalRules = `
 === OPERATIONAL RULES & CONSTRAINTS ===
 
 1. SECURITY & GATES (Human-in-the-loop):
@@ -1542,6 +1810,70 @@ ${
 7. ACTION FORMAT:
    - Otherwise set action to "act" and provide one concrete, unambiguous natural-language browser instruction in "instruction" (e.g., "click the 'Learn more' button on the 'Web Development Intern' card", "type 'I am excited about...' into the 'What interests you' field", "click the submit 'Apply' button", "click the close button '✕' or 'Close' on the modal to return to the job listings").
    - NEVER leave "instruction" empty when action is "act".
+`
+
+        // =========================================================================
+        // PLATFORM STRATEGY: YC (WORK AT A STARTUP) OPERATIONAL RULES
+        // =========================================================================
+        const ycOperationalRules = `
+=== YC (WORK AT A STARTUP) OPERATIONAL RULES & CONSTRAINTS ===
+
+1. PLATFORM ARCHITECTURE (workatastartup.com):
+   - You are operating on Y Combinator's Work at a Startup portal (https://www.workatastartup.com).
+   - Directory Layout: Listings are organized by YC-backed companies, with each company displaying its batch (e.g., W24, S23), description, and one or more open roles.
+   - Multiple distinct roles under the same company (e.g., Frontend, Backend, Fullstack) may be open and eligible.
+
+2. SECURITY & GATES (Human-in-the-loop):
+   - Strictly reserved for unsolvable security gates: CAPTCHAs, Cloudflare Turnstiles, 2FA/OTP SMS or email verification codes, or credential login prompts.
+   - In those cases only, set action to "needs_human" and explain what is blocking you in "reason".
+   - NEVER use "needs_human" for search criteria mismatches, unmatching listings, or missing data. Handle those autonomously.
+
+3. FILTER & SEARCH CONTROLS:
+   - Use the top filter controls (Role / Function, Experience level, Location / Remote, Batch) to narrow down results when requested.
+   - If specific UI filters are not visible, inspect visible job card tags and role titles directly.
+
+4. YC APPLICATION WORKFLOW & NOTE TO FOUNDERS (CRITICAL):
+   - Always report "jobUpdate" when inspecting, skipping, attempting, or confirming a job. Include company, role, direct URL (if visible), and status ("inspected", "skipped", "attempted", "confirmed").
+   - Phase A (Inspect): Click on a job role or "Apply" / "Learn more" to view its full details (status: "inspected").
+   - Phase B (Match & Open Form): If the role matches candidate criteria and has an active "Apply" or "Quick Apply" button, click it to open the application modal.
+   - Phase C (Founder Note - HIGH PRIORITY ON YC):
+     -> YC founders read candidate notes directly. Almost every YC job requires a short intro note ("Write a note to [Company/Founders]", "Why are you interested in this role?").
+     -> NEVER submit an empty or generic spam note!
+     -> Set "formDelegation" or provide an instruction with a tailored, concise 2-4 sentence pitch combining the candidate's real skills/projects with the company's product domain.
+     -> Once the note is entered, click the submit button ("Send application", "Submit application", or "Apply").
+     -> Set jobUpdate status to "attempted" ONLY in the single step where the final submit button is clicked.
+   - Phase D (Confirmation & Evidence):
+     -> Observe on-page proof: Look for "Application sent", "Applied", or a confirmation banner.
+     -> You MUST quote the exact on-page confirmation text in "evidence" and set jobUpdate status to "confirmed".
+
+5. BACKTRACKING & NAVIGATION:
+   - ONLY backtrack (close tab, close modal or navigate back) if:
+     a. The job description explicitly disqualifies the candidate (e.g. requires 5+ years for junior candidates), OR
+     b. You have already submitted the application and verified the outcome.
+   - When skipping or done with a job page: set action="act", set jobUpdate.status="skipped" or "inspected", and set instruction="close tab to return to the job listings" (or "click the close button '✕' or 'Close' on the modal to return to the job listings").
+   - If all visible company/job cards on the screen have been processed, scroll down ("scroll down the page to reveal more job listings").
+   - SCROLL BUDGET: Maximum 4 consecutive scrolls without finding a new matching job before concluding search cleanly as exhausted.
+
+6. COMPLETION & TARGET COUNT INTEGRITY:
+${
+    mem.targetCount
+        ? `   - Target count: ${mem.targetCount} job applications.
+   - You MUST apply to the requested number of distinct jobs. Never declare "done" without submitted applications!
+   - TARGET REACHED: Once Status Overview shows Confirmed >= Target (Remaining Target: 0) with on-page evidence, immediately set action to "done".`
+        : `   - Target Mode: Continuous / Timeframe window (apply to all unapplied matching jobs${mem.timeframeDays ? ` within last ${mem.timeframeDays} days` : ""}).
+   - Continue inspecting and applying to unapplied listings on the page.
+   - Stop when 4 scrolls are reached, page bottom is hit, or target timeframe is exceeded.`
+}
+
+7. ACTION FORMAT:
+   - Provide one concrete natural-language browser instruction in "instruction" (e.g. "click the 'Apply' button on 'Founding Full Stack Engineer'", "type '...' into the 'note to founders' field", "click the 'Send application' button", "click the close button '✕' or 'Close' on the modal to return to the job listings").
+   - NEVER leave "instruction" empty when action is "act".
+`
+
+        const platformRules = platform === "yc" ? ycOperationalRules : wellfoundOperationalRules
+
+        const plannerPrompt = `
+${platformRules.trim()}
 
 === CANDIDATE PROFILE ===
 ${candidateProfile || DEFAULT_CANDIDATE_PROFILE}
@@ -2072,8 +2404,12 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                 )
             ) {
                 decision.instruction = decision.reason.trim()
-            } else if (currentPageUrl && currentPageUrl.includes("job_listing_slug")) {
-                // On an open job listing page, default to closing modal to return to search list
+            } else if (platform === "wellfound" && currentPageUrl && currentPageUrl.includes("job_listing_slug")) {
+                // On an open Wellfound job listing drawer, default to closing modal to return to search list
+                decision.instruction =
+                    "click the close button '✕' or 'Close' on the modal to return to the job listings"
+            } else if (platform === "yc" && currentPageUrl && (/\/jobs\/\d+|\/companies\/[^\/]+\/jobs/i.test(currentPageUrl))) {
+                // On an open YC job page, default to returning to company directory
                 decision.instruction =
                     "click the close button '✕' or 'Close' on the modal to return to the job listings"
             }
@@ -2119,14 +2455,22 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             })
 
             if (matchingProcessedJob) {
-                const isDrawerOpen = Boolean(currentPageUrl && currentPageUrl.includes("job_listing_slug"))
+                const isDrawerOpen = Boolean(
+                    platform === "wellfound"
+                        ? currentPageUrl && currentPageUrl.includes("job_listing_slug")
+                        : platform === "yc"
+                          ? /\/jobs\/\d+|\/companies\/[^\/]+\/jobs/i.test(currentPageUrl)
+                          : false
+                )
                 if (isDrawerOpen) {
                     logger.info(
                         `[Agent] Viewport Stagnation detected inside open job drawer for '${matchingProcessedJob.company} - ${matchingProcessedJob.role}'. Auto-healing instruction to close modal and return to listings.`,
                         { company: matchingProcessedJob.company, role: matchingProcessedJob.role, step: step + 1 }
                     )
                     decision.instruction =
-                        "click the close button '✕' or 'Close' on the modal to return to the job listings"
+                        platform === "yc" && /\/jobs\/\d+/i.test(currentPageUrl)
+                            ? "return to the job listings"
+                            : "click the close button '✕' or 'Close' on the modal to return to the job listings"
                 } else {
                     logger.info(
                         `[Agent] Viewport Stagnation detected: planner attempted to re-click '${matchingProcessedJob.company} - ${matchingProcessedJob.role}' which is already in Visited Job Listings. Auto-healing instruction to scroll down.`,
@@ -2224,7 +2568,9 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                 `[Agent] Intercepted redundant submit click for ${currentJobKey || currentJobCompany || "current job"}: outcome is ${isCurrentJobAlreadyAttemptedOrConfirmed ? "already recorded/unresolved" : "submitted"}. Replacing with modal close.`
             )
             decision.instruction =
-                "click the close button '✕' or 'Close' on the modal to return to the job listings"
+                platform === "yc" && /\/jobs\/\d+/i.test(currentPageUrl)
+                    ? "return to the job listings"
+                    : "click the close button '✕' or 'Close' on the modal to return to the job listings"
         }
 
         let actSuccess = false
@@ -2243,7 +2589,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
         //     → also falls through; never silently records a failure and moves on.
         const mechanicalPage = await stagehand.browser.context.activePage()
         if (mechanicalPage) {
-            const mechanical = await tryMechanicalAction(mechanicalPage, decision.instruction)
+            const mechanical = await tryMechanicalAction(mechanicalPage, decision.instruction, platform, stagehand)
             if (mechanical.handled && mechanical.success) {
                 logger.info(
                     `[Agent] Mechanical action verified (no LLM call): ${mechanical.message}`,

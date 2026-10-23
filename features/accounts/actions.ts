@@ -93,9 +93,11 @@ export async function openAccountBrowserAction(id: string) {
     account.loginUrl ||
     (account.platform === "wellfound"
       ? "https://wellfound.com/jobs"
-      : account.platform === "linkedin"
-        ? "https://www.linkedin.com/feed"
-        : "https://google.com")
+      : account.platform === "workatastartup" || account.platform === "yc"
+        ? "https://www.workatastartup.com/companies"
+        : account.platform === "linkedin"
+          ? "https://www.linkedin.com/feed"
+          : "https://google.com")
 
   const sessionId = crypto.randomUUID().slice(0, 8)
   await startAccountLoginSession({
