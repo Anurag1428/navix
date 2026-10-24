@@ -37,6 +37,7 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
             stagehand: await getStagehand(),
             instruction: values.instruction,
             candidateProfile: values.candidateProfile,
+            maxSteps: values.maxSteps ? Number(values.maxSteps) : undefined,
             nodeId,
         }),
     extract: async ({ values, getStagehand }) =>

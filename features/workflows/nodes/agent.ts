@@ -12,7 +12,7 @@ import {
     type RecentAirtableApplication,
 } from "../../../lib/airtable/workflow-sync.ts"
 
-const MAX_STEPS = 20
+const DEFAULT_MAX_STEPS = 50
 
 // =========================================================================================
 // PLATFORM-SPECIFIC STRATEGY ARCHITECTURE
@@ -1060,14 +1060,16 @@ export async function generateMicroResponseWithQwen({
                     {
                         role: "system",
                         content:
-                            "You are an elite career application assistant drafting an answer for a software engineer candidate. " +
-                            "Write a punchy, authentic 2-3 sentence response directly connecting the candidate's actual projects (Navix, Musketeers, Daytona sandboxes, DOM pruning, Liveblocks) and measurable engineering achievements to this specific company and role.\n" +
-                            "Rules:\n" +
-                            "- Cite concrete technical proof points or metrics (e.g. cutting 17k tokens per action, cloud sandboxes with noVNC, dual-brain latency design).\n" +
-                            "- Sound like a confident, proactive engineer speaking directly to founders/engineers.\n" +
-                            "- NEVER use generic corporate filler or buzzwords like 'I am excited to apply', 'passionate individual', or 'thrive in dynamic environments'.\n" +
+                            "You are an elite career application assistant drafting an authentic application pitch for Anurag, an exceptional full-stack and systems engineer.\n" +
+                            "Tone & Engineering Persona:\n" +
+                            "- Write in the first person ('I'). Sound thoughtful, confident, mature, and direct—like an experienced engineer speaking to technical founders.\n" +
+                            "- Structure the response in 2-3 clean, well-spaced paragraphs:\n" +
+                            "  1. Opening Thesis: State clearly that you don't just build features, but look for ways to make systems more efficient and reliable.\n" +
+                            "  2. Core Technical Proof: Detail your work on Navix (implementing mechanical browser actions that bypass unnecessary LLM calls, saving ~17,000 input tokens per action, DOM pruning, and preventing unreliable actions) or Musketeers (AI-controlled desktop workflows with Daytona Linux sandboxes and noVNC).\n" +
+                            "  3. Grounded Closing: Note your background as a recent graduate from IIIT Bhagalpur with practical engineering skills, strong ownership, and a willingness to solve real problems rather than just implement assigned tasks.\n" +
+                            "- NEVER use sycophantic corporate fluff or buzzwords like 'I am drawn to your mission', 'passionate individual', 'eager to contribute', or 'thrive in dynamic environments'.\n" +
                             "- NEVER mention GPA or CGPA.\n" +
-                            "- Return ONLY the 2-3 sentences to be typed directly into the textbox.",
+                            "- Return ONLY the final text ready to be typed directly into the textbox.",
                     },
                     {
                         role: "user",
@@ -1075,7 +1077,7 @@ export async function generateMicroResponseWithQwen({
                     },
                 ],
                 temperature: 0.3,
-                max_tokens: 180,
+                max_tokens: 450,
             }),
         })
 
@@ -1577,13 +1579,16 @@ export async function agentNode({
     stagehand,
     instruction,
     candidateProfile,
+    maxSteps,
     nodeId = "default",
 }: {
     stagehand: Stagehand
     instruction: string
     candidateProfile?: string
+    maxSteps?: number
     nodeId?: string
 }) {
+    const effectiveMaxSteps = typeof maxSteps === "number" && maxSteps > 0 ? maxSteps : DEFAULT_MAX_STEPS
     if (!instruction) {
         throw new Error("Agent: instruction is empty.")
     }
@@ -1647,7 +1652,7 @@ export async function agentNode({
         }
     }
 
-    for (let step = 0; step < MAX_STEPS; step++) {
+    for (let step = 0; step < effectiveMaxSteps; step++) {
         // Snapshot existing attempted/confirmed jobs (company + role key) before this step begins
         // so we can distinguish prior submissions from the current step's planned submission
         const attemptedBeforeStepKeys = new Set(
@@ -2000,9 +2005,7 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                 if (effectiveStatus === "attempted") {
                     const currentInstruction = decision.action === "act" ? decision.instruction : undefined
                     const delegationNext = decision.action === "act" ? decision.formDelegation?.nextActionAfterTyping : undefined
-                    const isCurrentlySubmitting =
-                        isSubmitAction(currentInstruction) ||
-                        isSubmitAction(delegationNext)
+                    const isCurrentlySubmitting = isSubmitAction(currentInstruction)
                     const jobKey = `${company.toLowerCase().trim()}::${role.toLowerCase().trim()}`
                     const isAlreadyAttempted = attemptedBeforeStepKeys.has(jobKey)
 
@@ -2145,7 +2148,7 @@ Look at the current page and decide the SINGLE next browser action needed to mak
 
             // Target Count Completion Guard:
             // Prevent premature completion if the agent claims success but genuine submitted jobs < targetCount
-            if (mem.targetCount && genuineSubmissions.length < mem.targetCount && step < MAX_STEPS - 2) {
+            if (mem.targetCount && genuineSubmissions.length < mem.targetCount && step < effectiveMaxSteps - 2) {
                 const isClaimingExhaustion =
                     (mem.consecutiveScrolls || 0) >= 4 ||
                     wasLastActionAtBottom ||
@@ -2250,7 +2253,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             }
 
             // If verification check indicates the goal was NOT yet achieved, and we still have steps:
-            if (!verification.achieved && step < MAX_STEPS - 1) {
+            if (!verification.achieved && step < effectiveMaxSteps - 1) {
                 logger.warn("[Agent] Completion claim rejected by verification check", {
                     reason: verification.evidence,
                     step: step + 1,
@@ -2686,6 +2689,6 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
     await restorePrunedPageDom(page).catch(() => {})
 
     throw new Error(
-        `Agent did not complete the task within ${MAX_STEPS} steps. Last state URL: ${resolvedUrl || "unknown"}`
+        `Agent did not complete the task within ${effectiveMaxSteps} steps. Last state URL: ${resolvedUrl || "unknown"}`
     )
 }
