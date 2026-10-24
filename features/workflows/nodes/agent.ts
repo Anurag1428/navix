@@ -2,6 +2,10 @@ import type { Stagehand } from "@browserbasehq/stagehand"
 import { z } from "zod"
 import { logger, metadata, wait } from "@trigger.dev/sdk"
 import {
+    DEFAULT_CANDIDATE_MACRO_SUMMARY,
+    buildCandidateContextForQwen,
+} from "../lib/candidate-profile.ts"
+import {
     checkJobResubmissionGuard,
     getRecentApplicationsFromAirtable,
     isGenericSearchUrl,
@@ -946,11 +950,7 @@ const PlannerDecisionSchema = z
         }
     })
 
-const DEFAULT_CANDIDATE_PROFILE = `
-Full-Stack / Frontend Developer specializing in React, TypeScript, Next.js, and modern web application development.
-Passionate about creating clean, accessible, and high-performance user experiences.
-Motivated, proactive learner, and ready to contribute immediately to engineering and product goals.
-`.trim()
+const DEFAULT_CANDIDATE_PROFILE = DEFAULT_CANDIDATE_MACRO_SUMMARY
 
 /**
  * Waits for the page content to stop mutating, and ensures any open
@@ -1042,6 +1042,12 @@ export async function generateMicroResponseWithQwen({
     if (!apiKey) return null
 
     try {
+        const enrichedProfile = buildCandidateContextForQwen({
+            company,
+            role,
+            candidateProfileOverride: candidateProfile,
+        })
+
         const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -1054,11 +1060,18 @@ export async function generateMicroResponseWithQwen({
                     {
                         role: "system",
                         content:
-                            "You are a professional career application assistant. Write a punchy, authentic 2-sentence response connecting the candidate's exact background and skills to this specific company and role. Never use generic filler; reference the company mission/tech and the candidate's actual qualifications. Return ONLY the 2 sentences to be typed directly into the textbox.",
+                            "You are an elite career application assistant drafting an answer for a software engineer candidate. " +
+                            "Write a punchy, authentic 2-3 sentence response directly connecting the candidate's actual projects (Navix, Musketeers, Daytona sandboxes, DOM pruning, Liveblocks) and measurable engineering achievements to this specific company and role.\n" +
+                            "Rules:\n" +
+                            "- Cite concrete technical proof points or metrics (e.g. cutting 17k tokens per action, cloud sandboxes with noVNC, dual-brain latency design).\n" +
+                            "- Sound like a confident, proactive engineer speaking directly to founders/engineers.\n" +
+                            "- NEVER use generic corporate filler or buzzwords like 'I am excited to apply', 'passionate individual', or 'thrive in dynamic environments'.\n" +
+                            "- NEVER mention GPA or CGPA.\n" +
+                            "- Return ONLY the 2-3 sentences to be typed directly into the textbox.",
                     },
                     {
                         role: "user",
-                        content: `Candidate Profile:\n${candidateProfile || "Fresher graduate"}\n\nTarget Company: ${company || "Company"}\nRole: ${role || "Role"}\nQuestion/Prompt: ${question || "What interests you about working for this company?"}`,
+                        content: `Candidate Context:\n${enrichedProfile}\n\nTarget Company: ${company || "Company"}\nTarget Role: ${role || "Software Engineer"}\nQuestion/Prompt: ${question || "Why do you want to work for this company?"}`,
                     },
                 ],
                 temperature: 0.3,
