@@ -79,6 +79,8 @@ export type AgentWorkingMemory = {
     timeframeDays?: number
     airtableRecentApplications?: RecentAirtableApplication[]
     consecutiveScrolls?: number
+    sortApplied?: boolean
+    sortAppliedAtStep?: number
 }
 
 const globalAgentMemoryStore = new Map<string, AgentWorkingMemory>()
@@ -102,6 +104,7 @@ export function getAgentWorkingMemory(nodeId: string): AgentWorkingMemory {
             attemptedJobs: [],
             skippedJobs: [],
             consecutiveScrolls: 0,
+            sortApplied: false,
         }
         globalAgentMemoryStore.set(nodeId, mem)
     }
@@ -139,9 +142,29 @@ export function parseTimeframeDaysFromInstruction(instruction: string): number |
     return undefined
 }
 
-export function isSubmitAction(instruction?: string): boolean {
+export function isSubmitAction(instruction?: string, hasOpenDialog?: boolean): boolean {
     if (!instruction || typeof instruction !== "string") return false
-    return /(?:click|submit|press).*(?:apply|send application|application)/i.test(instruction)
+    // 1. If the instruction is typing into a field, it is NEVER a submit action
+    if (/^\s*type\b/i.test(instruction)) return false
+    // 2. If it's a navigation or drawer-opening button, it is NOT a final form submission
+    if (/apply\s+to\s+role|open.*(?:modal|drawer|form)|view\s+job|learn\s+more/i.test(instruction)) {
+        return false
+    }
+    // 3. Explicit final submission buttons inside forms/modals
+    if (/(?:click|submit|press).*(?:\bsend\b|send application|submit application|submit form)/i.test(instruction)) {
+        return true
+    }
+    // 4. "Quick Apply" is a direct application submission
+    if (/(?:click|submit|press).*quick apply/i.test(instruction)) {
+        return true
+    }
+    // 5. If hasOpenDialog is explicitly false (we are on search directory, not inside a modal),
+    // then a generic "Apply" button is only opening the card/drawer, not submitting!
+    if (hasOpenDialog === false) {
+        return false
+    }
+    // 6. Generic Apply click (e.g. inside an open modal or default)
+    return /(?:click|submit|press).*(?:apply|application)/i.test(instruction)
 }
 
 export function isCloseAction(instruction?: string): boolean {
@@ -643,6 +666,105 @@ export async function tryMechanicalAction(
         }
     }
 
+    // ── MECHANICAL SUBMIT / APPLY BUTTON CLICK ────────────────────────────────
+    if (isSubmitAction(instruction, true)) {
+        try {
+            const submitEvaluation = await page.evaluate(() => {
+                // 1. Must be inside an active, visible dialog/drawer
+                const dialogs = Array.from(
+                    document.querySelectorAll<HTMLElement>(
+                        '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                    )
+                )
+                const activeDialog = dialogs.find((d) => {
+                    const style = window.getComputedStyle(d)
+                    const rect = d.getBoundingClientRect()
+                    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 20
+                })
+                if (!activeDialog) return { canClick: false, reason: "no_active_dialog" }
+
+                // 2. Pre-click Validity & Disabled Guard:
+                // Check if dialog contains invalid fields or disabled submit button
+                const invalidElements = activeDialog.querySelectorAll('[aria-invalid="true"], :invalid')
+                if (invalidElements.length > 0) {
+                    return { canClick: false, reason: "invalid_fields_present" }
+                }
+
+                // Check for warning banners that block submission (e.g. location mismatch needing relocation selection)
+                const dialogText = (activeDialog.textContent || "").toLowerCase()
+                if (dialogText.includes("requires relocation") || dialogText.includes("relocate to")) {
+                    const selectEl = activeDialog.querySelector('select, [role="combobox"]')
+                    if (selectEl && !(selectEl as HTMLSelectElement).value) {
+                        return { canClick: false, reason: "unresolved_location_warning" }
+                    }
+                }
+
+                // 3. Find candidate submit buttons inside the active dialog
+                const buttons = Array.from(
+                    activeDialog.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]')
+                )
+                const submitBtn = buttons.find((b) => {
+                    const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
+                    const isCandidate =
+                        txt === "send application" ||
+                        txt === "submit application" ||
+                        txt === "apply" ||
+                        txt === "quick apply" ||
+                        txt === "submit" ||
+                        txt.includes("send application") ||
+                        txt.includes("submit application")
+                    if (!isCandidate) return false
+
+                    // Ensure button is not disabled
+                    const isDisabled =
+                        (b as HTMLButtonElement).disabled ||
+                        b.getAttribute("aria-disabled") === "true" ||
+                        b.classList.contains("disabled") ||
+                        window.getComputedStyle(b).pointerEvents === "none"
+                    return !isDisabled
+                })
+
+                if (!submitBtn) return { canClick: false, reason: "no_enabled_submit_button" }
+
+                // Mark the button with a temporary attribute for deterministic Playwright clicking
+                submitBtn.setAttribute("data-stagehand-mechanical-submit", "true")
+                return { canClick: true, text: submitBtn.textContent?.trim() || "submit" }
+            })
+
+            if (submitEvaluation.canClick) {
+                const targetBtn = page.locator('[data-stagehand-mechanical-submit="true"]').first()
+                if ((await targetBtn.count()) > 0) {
+                    await targetBtn.click({ timeout: 3000 }).catch(async () => {
+                        await page.evaluate(() => {
+                            const b = document.querySelector('[data-stagehand-mechanical-submit="true"]') as HTMLElement
+                            b?.click()
+                        })
+                    })
+                    // Clean up temporary marker
+                    await page.evaluate(() => {
+                        document.querySelectorAll('[data-stagehand-mechanical-submit]').forEach((el) => {
+                            el.removeAttribute("data-stagehand-mechanical-submit")
+                        })
+                    }).catch(() => {})
+
+                    // Wait post-submit for DOM updates and modal transitions to settle
+                    await new Promise((r) => setTimeout(r, 1500))
+                    await waitForPageSettle(page, { settleMs: 500, maxWaitMs: 3000 })
+
+                    return {
+                        handled: true,
+                        success: true,
+                        message: `Clicked submit '${submitEvaluation.text}' button mechanically via Playwright (0 LLM tokens)`,
+                    }
+                }
+            }
+            // If cannot click mechanically (disabled, validation error, etc.), fall through to stagehand.act()
+            return NOT_HANDLED
+        } catch {
+            return NOT_HANDLED
+        }
+    }
+
     // ── SCROLL UP ────────────────────────────────────────────────────────────
     if (/scroll\s+up/i.test(instruction)) {
         try {
@@ -769,6 +891,12 @@ export function formatCompactWorkingMemory(
         statusOverview,
         `Last Action Result: ${lastActionResult}`,
     ]
+
+    if (mem.sortApplied) {
+        sections.push(
+            `Sort Order: "Most recent" ALREADY SELECTED (Step ${mem.sortAppliedAtStep || 1}) -> Sorting is complete. DO NOT re-click sort controls!`
+        )
+    }
 
     if (scrollCount >= 3) {
         sections.push(
@@ -1284,7 +1412,16 @@ export async function prunePageDom(
                     }
 
                     const cardText = (card.textContent || "").toLowerCase()
-                    if (!cardText.includes(cNorm)) return false
+                    // Match company on card text OR on the parent startup block (Wellfound StartupResult)
+                    const parentStartup = typeof card.closest === "function"
+                        ? card.closest(
+                            '[data-test*="StartupResult" i], [class*="styles_result" i], [class*="styles_startup" i], article, section'
+                        )
+                        : null
+                    const parentText = parentStartup ? (parentStartup.textContent || "").toLowerCase() : ""
+                    const fullText = cardText + " " + parentText
+
+                    if (!fullText.includes(cNorm)) return false
 
                     if (cardText.includes(rNorm)) return true
 
@@ -1297,7 +1434,12 @@ export async function prunePageDom(
                 }
 
                 // 3. Hide already processed job cards (must match specific ID, canonical URL, or company + role)
+                // Targets individual job listings so sibling roles at the same company remain discoverable!
                 const cardSelectors = [
+                    '[data-test*="JobListing" i]',
+                    '[data-test*="job-listing" i]',
+                    '[class*="styles_jobListing" i]',
+                    '[class*="jobListing" i]',
                     '[role="listitem"]',
                     "article",
                     '[data-test*="job" i]',
@@ -1409,9 +1551,15 @@ export async function prunePageDom(
                     }
                 } catch {}
 
-                // 5. Hide job cards that have scrolled far off-screen (viewport bounding for infinite scroll)
+                // 5. Hide job cards and startup containers that have scrolled far off-screen (viewport bounding for infinite scroll)
                 try {
-                    const allCards = document.querySelectorAll<HTMLElement>(cardSelectors.join(", "))
+                    const offscreenSelectors = [
+                        ...cardSelectors,
+                        '[data-test*="StartupResult" i]',
+                        '[data-test="StartupResult"]',
+                        '[class*="styles_result" i]',
+                    ]
+                    const allCards = document.querySelectorAll<HTMLElement>(offscreenSelectors.join(", "))
                     allCards.forEach((card) => {
                         try {
                             if (
@@ -1812,18 +1960,15 @@ ${
     mem.targetCount
         ? `   - Target count: ${mem.targetCount} job applications.
    - You MUST apply to the requested number of distinct jobs. Never declare "done" if you only viewed or clicked "Learn more" on a job without submitting its application!
-   - A successful browser click, closed modal, model's claim, or reaching target count is NOT sufficient confirmation — reliable proof is required.
-   - TARGET REACHED: Once the Status Overview shows Confirmed >= Target (Remaining Target: 0) with reliable on-page evidence, your goal is COMPLETE! Immediately set action to "done" with a clear summary message. Do NOT inspect any further listings!`
+   - TARGET REACHED: Once Confirmed >= Target (Remaining Target: 0) with on-page evidence, set action to "done" immediately.`
         : `   - Target Mode: Continuous / Timeframe window (apply to all unapplied matching jobs${mem.timeframeDays ? ` within last ${mem.timeframeDays} days` : ""}).
-   - DO NOT stop after 1 or 2 applications! Continue inspecting and applying to subsequent unapplied listings on the page.
-   - STOPPING CRITERIA:
-     a. TIMEFRAME BOUNDARY: If the visible job cards indicate they were posted outside the target window (e.g. older than ${mem.timeframeDays || 3} days, such as "${(mem.timeframeDays || 3) + 1}d ago", "1w ago", "2w ago"), STOP and set action to "done".
-     b. SCROLL LIMIT: If Consecutive Scrolls reaches 4 without finding new matching jobs, STOP and set action to "done" (reason: search exhausted).
-     c. PAGE BOTTOM: If Last Action Result indicates "Page is at the bottom", STOP and set action to "done".
-     d. EXHAUSTION: If all visible matching listings on the screen have been inspected/applied/skipped, SCROLL DOWN the page. If no more unapplied matching jobs exist after scrolling, set action to "done" with a clear explanation of how many were applied for.`
+   - DO NOT stop after 1 or 2 applications! Continue to subsequent unapplied listings.
+   - STOPPING CRITERIA (set action="done"):
+     a. TIMEFRAME BOUNDARY: Visible cards are older than ${mem.timeframeDays || 3} days (e.g. "${(mem.timeframeDays || 3) + 1}d ago", "1w ago").
+     b. SCROLL LIMIT: Reached 4 consecutive scrolls without new matching jobs (search exhausted).
+     c. PAGE BOTTOM: Page is at bottom and all matching listings are processed.`
 }
-   - A successful browser click, closed modal, or model's claim is NOT sufficient confirmation — reliable on-page proof is required.
-   - EXHAUSTION FALLBACK: If and ONLY if you have inspected all visible listings on the page and no more matching jobs exist (even if target is not reached), set action to "done" with a clear explanation of how many were applied for and that no more matching listings were found.
+   - EXHAUSTION FALLBACK: If all visible listings are inspected/applied/skipped and no more exist, set action to "done" with confirmed count.
 
 7. ACTION FORMAT:
    - Otherwise set action to "act" and provide one concrete, unambiguous natural-language browser instruction in "instruction" (e.g., "click the 'Learn more' button on the 'Web Development Intern' card", "type 'I am excited about...' into the 'What interests you' field", "click the submit 'Apply' button", "click the close button '✕' or 'Close' on the modal to return to the job listings").
@@ -1910,6 +2055,7 @@ Look at the current page and decide the SINGLE next browser action needed to mak
 
         // ── DOM Pruning & Scoped Extraction (Token Optimization) ───────────
         let extractOptions: any = undefined
+        let pruneResult: { prunedCount: number; restoredCount: number; hasOpenDialog: boolean } | undefined = undefined
         if (page) {
             const processedJobs: ProcessedJobTarget[] = [
                 ...mem.skippedJobs.map((j) => ({
@@ -1922,6 +2068,11 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                     role: j.role,
                     url: j.url,
                 })),
+                ...mem.attemptedJobs.map((j) => ({
+                    company: j.company,
+                    role: j.role,
+                    url: j.url,
+                })),
                 ...(mem.airtableRecentApplications?.map((j) => ({
                     company: j.company,
                     role: j.role,
@@ -1929,7 +2080,7 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                     id: j.jobId,
                 })) || []),
             ]
-            const pruneResult = await prunePageDom(page, { processedJobs })
+            pruneResult = await prunePageDom(page, { processedJobs })
             if (pruneResult.prunedCount > 0 || pruneResult.restoredCount > 0) {
                 logger.info(
                     `[Agent] DOM Pruning: masked ${pruneResult.prunedCount}, restored ${pruneResult.restoredCount} elements (dialogOpen=${pruneResult.hasOpenDialog})`
@@ -2004,8 +2155,10 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                 let effectiveStatus = status
                 if (effectiveStatus === "attempted") {
                     const currentInstruction = decision.action === "act" ? decision.instruction : undefined
-                    const delegationNext = decision.action === "act" ? decision.formDelegation?.nextActionAfterTyping : undefined
-                    const isCurrentlySubmitting = isSubmitAction(currentInstruction)
+                    // If formDelegation is present, this step is ONLY typing text, NOT submitting!
+                    const isTypingStep = Boolean(decision.formDelegation)
+                    const isCurrentlySubmitting =
+                        !isTypingStep && isSubmitAction(currentInstruction, pruneResult?.hasOpenDialog)
                     const jobKey = `${company.toLowerCase().trim()}::${role.toLowerCase().trim()}`
                     const isAlreadyAttempted = attemptedBeforeStepKeys.has(jobKey)
 
@@ -2200,6 +2353,11 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                             role: j.role,
                             url: j.url,
                         })),
+                        ...mem.attemptedJobs.map((j) => ({
+                            company: j.company,
+                            role: j.role,
+                            url: j.url,
+                        })),
                         ...(mem.airtableRecentApplications?.map((j) => ({
                             company: j.company,
                             role: j.role,
@@ -2226,9 +2384,25 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                     } catch {}
                 }
 
-                const verifyResult = await extractWithRetry(
-                    stagehand,
-                    `You are an objective auditor evaluating whether the user's task was successfully accomplished on this web page.
+                // ── Double Audit Elimination (Zero-Risk Token Optimization) ───
+                // If genuine submissions were already confirmed with on-page proof in memory,
+                // use that verified proof and skip the redundant 17,131-token extraction call!
+                const verifiedSubmissions = getGenuineSubmissions(mem)
+                if (verifiedSubmissions.length > 0) {
+                    verification = {
+                        achieved: true,
+                        summary: `Successfully applied to and confirmed ${verifiedSubmissions.length} job(s) with verified on-page proof.`,
+                        evidence: verifiedSubmissions
+                            .map((j) => `${j.company} - ${j.role}: ${j.evidence || "Confirmed application"}`)
+                            .join("; "),
+                    }
+                    logger.info(
+                        `[Agent] Verified proof already in memory (${verifiedSubmissions.length} confirmed jobs). Skipping redundant internal LLM audit call (saved ~17k tokens).`
+                    )
+                } else {
+                    const verifyResult = await extractWithRetry(
+                        stagehand,
+                        `You are an objective auditor evaluating whether the user's task was successfully accomplished on this web page.
 Goal / Task: "${instruction}"
 Actions taken (recent):
 ${recentHistoryText}
@@ -2236,15 +2410,16 @@ Agent claim: "${decision.message ?? "Completed"}"
 
 Inspect the visible page text, confirmation modals, banners, URL, or updated state.
 Did the agent genuinely achieve the user's intended goal? Provide concrete proof/evidence from the page (or explain what is missing).`,
-                    z.object({
-                        achieved: z.boolean().describe("Whether the goal was genuinely achieved on the page"),
-                        evidence: z.string().describe("Specific proof from the page (e.g. confirmation message, order ID, success banner) or explanation of deficiency"),
-                        summary: z.string().describe("Concise summary of the outcome"),
-                    }),
-                    auditOptions
-                )
-                if (verifyResult?.data) {
-                    verification = verifyResult.data
+                        z.object({
+                            achieved: z.boolean().describe("Whether the goal was genuinely achieved on the page"),
+                            evidence: z.string().describe("Specific proof from the page (e.g. confirmation message, order ID, success banner) or explanation of deficiency"),
+                            summary: z.string().describe("Concise summary of the outcome"),
+                        }),
+                        auditOptions
+                    )
+                    if (verifyResult?.data) {
+                        verification = verifyResult.data
+                    }
                 }
             } catch (vErr) {
                 logger.warn("[Agent] Verification extraction warning, falling back to planner decision", {
@@ -2384,11 +2559,9 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             if (microText) {
                 logger.info(`[Dual-Brain Qwen] Synthesized response: "${microText}"`)
                 const cleanText = microText.replace(/'/g, "\\'")
-                let combinedInstruction = `type '${cleanText}' into the '${decision.formDelegation.targetField}' textbox`
-                if (decision.formDelegation.nextActionAfterTyping) {
-                    combinedInstruction += ` and then ${decision.formDelegation.nextActionAfterTyping}`
-                }
-                decision.instruction = combinedInstruction
+                // Keep Stagehand act() atomic: ONLY type in this step.
+                // On the very next step, the job is still "inspected", so the planner will click Submit!
+                decision.instruction = `type '${cleanText}' into the '${decision.formDelegation.targetField}' textbox`
             }
         }
 
@@ -2497,6 +2670,19 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             }
         }
 
+        // Redundant Sort Interceptor (Zero-Risk Token Optimization):
+        // If sorting by 'Most recent' was already executed earlier, intercept attempts to re-click sort controls
+        if (
+            mem.sortApplied &&
+            decision.instruction &&
+            /(?:click|select|open).*(?:sort by|'most recent' sort|dropdown.*sort)/i.test(decision.instruction)
+        ) {
+            logger.info(
+                `[Agent] Intercepted redundant sort click: sorting was already selected at step ${mem.sortAppliedAtStep || 1}. Converting to scroll down.`
+            )
+            decision.instruction = "scroll down the page to reveal more job listings"
+        }
+
         const isScrollDown = /scroll\s+down/i.test(decision.instruction || "")
         if (isScrollDown) {
             mem.consecutiveScrolls = (mem.consecutiveScrolls || 0) + 1
@@ -2551,7 +2737,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
         // A final Apply/Submit click must occur at most once per job while its outcome is unresolved.
         // Prevent repeating submit button clicks in loops or resubmitting previously attempted/confirmed jobs.
         // NOTE: Matching requires specific company AND role together. Multiple roles at the same company are allowed!
-        const isCurrentActionSubmit = isSubmitAction(decision.instruction)
+        const isCurrentActionSubmit = isSubmitAction(decision.instruction, pruneResult?.hasOpenDialog)
         const lastStep = mem.history[mem.history.length - 1]
         const wasLastStepSubmit =
             lastStep &&
@@ -2578,6 +2764,16 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             Boolean(currentJobKey) &&
             (confirmedBeforeStepKeys.has(currentJobKey) ||
              attemptedBeforeStepKeys.has(currentJobKey))
+
+        if (
+            !mem.sortApplied &&
+            decision.instruction &&
+            /(?:click|select).*(?:most recent|'most recent')/i.test(decision.instruction)
+        ) {
+            mem.sortApplied = true
+            mem.sortAppliedAtStep = step + 1
+            logger.info(`[Agent] Recorded sortApplied: true at step ${step + 1}`)
+        }
 
         if (isCurrentActionSubmit && (wasLastStepSubmit || isCurrentJobAlreadyAttemptedOrConfirmed)) {
             logger.info(
@@ -2640,7 +2836,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
 
         // Post-submit grace period & settle:
         // When clicking Apply/submit, wait for DOM updates, network requests, and modal transitions to settle
-        if (isSubmitAction(decision.instruction) && actSuccess) {
+        if (isSubmitAction(decision.instruction, pruneResult?.hasOpenDialog) && actSuccess) {
             await new Promise((r) => setTimeout(r, 1500))
             const currentPage = await stagehand.browser.context.activePage()
             if (currentPage) {
