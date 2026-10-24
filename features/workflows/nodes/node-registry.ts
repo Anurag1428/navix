@@ -106,6 +106,7 @@ export const nodeRegistry = {
     fields: [
       { key: "instruction", label: "Instruction", placeholder: "Search for the stock price of NVDA and summarize the results", multiline: true, required: true },
       { key: "candidateProfile", label: "Candidate Profile", placeholder: "Skills, experience, and background for tailored applications...", multiline: true },
+      { key: "maxSteps", label: "Max Steps", placeholder: "50 (default)", description: "Maximum number of browser actions before concluding (default: 50).", required: false },
     ],
     outputs: [
       { path: "success", label: "Success" },
