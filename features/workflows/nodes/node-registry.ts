@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react"
-import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot, Database } from "lucide-react"
+import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot, Database, Send, MessageCircle } from "lucide-react"
 import { Zap } from "lucide-react"
 
 export type StepNodeKind = "trigger" | "action"
@@ -251,6 +251,64 @@ export const nodeRegistry = {
       { path: "isNew", label: "Is New" },
       { path: "alreadyApplied", label: "Already Applied" },
       { path: "summary", label: "Summary" },
+    ],
+  },
+  telegram: {
+    type: "telegram",
+    kind: "action",
+    label: "Telegram",
+    icon: Send,
+    accent: "bg-sky-500 text-white",
+    fields: [
+      {
+        key: "message",
+        label: "Message (Optional)",
+        placeholder: "Leave empty to automatically send the complete workflow execution report",
+        multiline: true,
+        required: false,
+        description: "Custom message with {{ node_id.output }} interpolation, or leave empty to auto-send the full run report.",
+      },
+      {
+        key: "chatId",
+        label: "Chat ID (Optional)",
+        placeholder: "Defaults to TELEGRAM_CHAT_ID from .env.local",
+        required: false,
+        description: "Specific Telegram Chat ID to send to. Leave blank to use TELEGRAM_CHAT_ID from environment.",
+      },
+    ],
+    outputs: [
+      { path: "success", label: "Success" },
+      { path: "messageId", label: "Message ID" },
+      { path: "recipient", label: "Recipient" },
+    ],
+  },
+  whatsapp: {
+    type: "whatsapp",
+    kind: "action",
+    label: "WhatsApp",
+    icon: MessageCircle,
+    accent: "bg-emerald-600 text-white",
+    fields: [
+      {
+        key: "message",
+        label: "Message (Optional)",
+        placeholder: "Leave empty to automatically send the complete workflow execution report",
+        multiline: true,
+        required: false,
+        description: "Custom message with {{ node_id.output }} interpolation, or leave empty to auto-send the full run report.",
+      },
+      {
+        key: "recipient",
+        label: "Recipient Phone (Optional)",
+        placeholder: "e.g. +1234567890 (defaults to environment config)",
+        required: false,
+        description: "Specific recipient phone number. Leave blank to use WHATSAPP_TO_NUMBER or CALLMEBOT_PHONE from environment.",
+      },
+    ],
+    outputs: [
+      { path: "success", label: "Success" },
+      { path: "messageId", label: "Message ID" },
+      { path: "recipient", label: "Recipient" },
     ],
   },
 } satisfies Record<string, NodeDefinition>

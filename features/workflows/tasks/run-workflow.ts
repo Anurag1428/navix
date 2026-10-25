@@ -692,6 +692,35 @@ export const runWorkflowTask = task({
                     metadata.set("workflowSummary", summary.data as any)
                     await metadata.flush()
                 } catch {}
+                // Automatically dispatch execution report to Telegram and/or WhatsApp
+                try {
+                    const { dispatchWorkflowNotification } = await import(
+                        "@/lib/notifications"
+                    )
+                    const notifResult = await dispatchWorkflowNotification({
+                        workflowName: workflow?.name || "Workflow",
+                        workflowId,
+                        runId,
+                        durationMs,
+                        steps,
+                        outputs,
+                        goalEvaluation,
+                        airtableSyncResult,
+                        error: workflowError,
+                        summaryData: summary.data,
+                    })
+
+                    if (notifResult.sentTelegram) {
+                        logger.info("Telegram workflow report sent successfully", { runId })
+                    }
+                    if (notifResult.sentWhatsApp) {
+                        logger.info("WhatsApp workflow report sent successfully", { runId })
+                    }
+                } catch (notifErr) {
+                    logger.warn("Workflow notification warning (non-blocking)", {
+                        error: String(notifErr),
+                    })
+                }
             } catch (summaryErr) {
                 logger.warn("Failed to generate workflow summary (non-blocking)", {
                     error: String(summaryErr),

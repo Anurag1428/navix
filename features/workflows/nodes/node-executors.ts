@@ -14,6 +14,8 @@ import { observeNode } from "@/features/workflows/nodes/observe"
 import { sendEmailNode } from "@/features/workflows/nodes/send-email"
 import { verifyNode } from "@/features/workflows/nodes/verify"
 import { airtableNode } from "@/features/workflows/nodes/airtable"
+import { telegramNode } from "@/features/workflows/nodes/telegram"
+import { whatsappNode } from "@/features/workflows/nodes/whatsapp"
 
 export type NodeContext = {
     nodeId?: string
@@ -61,4 +63,8 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         sendEmailNode({ values, nodeId }),
     airtable: async ({ values, nodeId, outputs, nodes, edges, steps }) =>
         airtableNode({ values, nodeId, outputs, nodes, edges, steps }),
+    telegram: async ({ values, nodeId, steps, outputs }) =>
+        telegramNode({ values, nodeId, steps, outputs }),
+    whatsapp: async ({ values, nodeId, steps, outputs }) =>
+        whatsappNode({ values, nodeId, steps, outputs }),
 } satisfies Record<ActionNodeType, NodeExecutor>
