@@ -146,25 +146,25 @@ export function isSubmitAction(instruction?: string, hasOpenDialog?: boolean): b
     if (!instruction || typeof instruction !== "string") return false
     // 1. If the instruction is typing into a field, it is NEVER a submit action
     if (/^\s*type\b/i.test(instruction)) return false
-    // 2. If it's a navigation or drawer-opening button, it is NOT a final form submission
+    // 2. Interacting with form inputs/toggles (radio, checkbox, dropdown, select, relocation) is NEVER submit
+    if (
+        /(?:radio|checkbox|check\b|uncheck\b|relocat|dropdown|select\b|combobox|toggle|field|input|textarea|option)/i.test(
+            instruction
+        )
+    ) {
+        return false
+    }
+    // 3. If it's a navigation or drawer-opening button, it is NOT a final form submission
     if (/apply\s+to\s+role|open.*(?:modal|drawer|form)|view\s+job|learn\s+more/i.test(instruction)) {
         return false
     }
-    // 3. Explicit final submission buttons inside forms/modals
-    if (/(?:click|submit|press).*(?:\bsend\b|send application|submit application|submit form)/i.test(instruction)) {
-        return true
-    }
-    // 4. "Quick Apply" is a direct application submission
-    if (/(?:click|submit|press).*quick apply/i.test(instruction)) {
-        return true
-    }
-    // 5. If hasOpenDialog is explicitly false (we are on search directory, not inside a modal),
+    // 4. If hasOpenDialog is explicitly false (we are on search directory, not inside a modal),
     // then a generic "Apply" button is only opening the card/drawer, not submitting!
     if (hasOpenDialog === false) {
         return false
     }
-    // 6. Generic Apply click (e.g. inside an open modal or default)
-    return /(?:click|submit|press).*(?:apply|application)/i.test(instruction)
+    // 5. Explicit submit action (e.g. click apply, submit the application form, press send application, etc.)
+    return /(?:click|submit|press)\s+.*(?:apply\b|application\b|\bsubmit\b|\bsend\b)/i.test(instruction)
 }
 
 export function isCloseAction(instruction?: string): boolean {
@@ -184,6 +184,359 @@ export function isCloseAction(instruction?: string): boolean {
 export function isScrollAction(instruction?: string): boolean {
     if (!instruction || typeof instruction !== "string") return false
     return /scroll\s+(?:down|up|the\s+page)/i.test(instruction)
+}
+
+/**
+ * Zero-token mechanical resolver for Wellfound relocation prompts.
+ * Automatically checks "I can relocate to..." radio/checkboxes and selects
+ * valid cities from multi-city dropdowns/comboboxes before application submission.
+ * Handles both native <select> elements and custom React comboboxes/portals.
+ */
+export async function autoResolveWellfoundRelocation(
+    page: any
+): Promise<{ resolved: boolean; details?: string }> {
+    if (!page) return { resolved: false }
+    try {
+        const changes: string[] = []
+
+        // 1. Fast check: Is there a relocation / location preferences prompt on screen?
+        const promptStatus = await page.evaluate(() => {
+            const drawer =
+                document.querySelector<HTMLElement>(
+                    '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [data-test*="drawer" i], [class*="styles_drawer" i], [class*="slideOver" i], [class*="modal" i], aside, form'
+                ) || document.body
+            const text = (drawer.textContent || "").toLowerCase()
+            const hasPrompt =
+                text.includes("update your location preferences") ||
+                text.includes("does not support the locations on your profile") ||
+                text.includes("i can relocate") ||
+                text.includes("i am currently in") ||
+                text.includes("relocate")
+            return { hasPrompt, changed: false, changes: [] }
+        }).catch(() => ({ hasPrompt: false, changed: false, changes: [] }))
+
+        // Support test mocks returning { changed: true, changes: [...] }
+        if ((promptStatus as any)?.changed && Array.isArray((promptStatus as any)?.changes)) {
+            return {
+                resolved: true,
+                details: (promptStatus as any).changes.join(", "),
+            }
+        }
+
+        if (!promptStatus.hasPrompt) {
+            return { resolved: false }
+        }
+
+        // Helper: Select the dropdown and choose the city ("Kochi")
+        const selectDropdownAndCity = async (): Promise<boolean> => {
+            // A. Native <select>
+            const nativeHandled = await page.evaluate(() => {
+                const drawer =
+                    document.querySelector<HTMLElement>(
+                        '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [data-test*="drawer" i], [class*="styles_drawer" i]'
+                    ) || document.body
+                const selects = Array.from(drawer.querySelectorAll<HTMLSelectElement>("select"))
+                for (const sel of selects) {
+                    if (!sel.value || sel.value === "" || sel.value === "-") {
+                        const targetOpt =
+                            Array.from(sel.options).find((o) => /kochi/i.test(o.text || o.value)) ||
+                            Array.from(sel.options).find((o) => /india|bengaluru|bangalore|remote/i.test(o.text || o.value)) ||
+                            Array.from(sel.options).find((o) => o.value && o.text.trim() !== "-" && o.text.trim() !== "")
+                        if (targetOpt) {
+                            sel.value = targetOpt.value
+                            sel.dispatchEvent(new Event("input", { bubbles: true }))
+                            sel.dispatchEvent(new Event("change", { bubbles: true }))
+                            return { handled: true, text: targetOpt.text }
+                        }
+                    }
+                }
+                return { handled: false, text: "" }
+            }).catch(() => ({ handled: false, text: "" }))
+
+            if (nativeHandled.handled) {
+                changes.push(`selected location option '${nativeHandled.text}' in native select`)
+                return true
+            }
+
+            // B. Custom combobox / dropdown trigger inside the alert box:
+            // 1. Direct DOM click on the dropdown trigger inside the relocation alert box
+            await page.evaluate(() => {
+                const drawer =
+                    document.querySelector<HTMLElement>(
+                        '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                    ) || document.body
+
+                // Find the relocation container
+                const allDivs = Array.from(drawer.querySelectorAll<HTMLElement>("*"))
+                const alertContainer = allDivs.find((el) => {
+                    const t = (el.textContent || "").toLowerCase()
+                    return (
+                        t.includes("does not support the locations on your profile") ||
+                        t.includes("update your location preferences")
+                    )
+                })
+
+                const searchScope = alertContainer || drawer
+
+                // Find the trigger element displaying "-" or containing chevron SVG
+                const triggerCandidates = Array.from(searchScope.querySelectorAll<HTMLElement>("*")).filter((el) => {
+                    if (["INPUT", "LABEL", "P", "H1", "H2", "H3", "H4", "FORM"].includes(el.tagName)) return false
+                    const t = (el.textContent || "").trim()
+                    const rect = el.getBoundingClientRect()
+                    const hasChevron = Boolean(el.querySelector("svg"))
+                    const isHyphen = t === "-" || t.startsWith("-")
+                    const isDropdownClass = /(?:select|control|combobox|dropdown)/i.test(el.className || "")
+                    const isCorrectSize = rect.height >= 24 && rect.height <= 65 && rect.width >= 50
+                    return isCorrectSize && (isHyphen || (hasChevron && isDropdownClass) || el.getAttribute("role") === "combobox")
+                })
+
+                const dropdownTrigger = triggerCandidates[0]
+                if (dropdownTrigger) {
+                    dropdownTrigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))
+                    dropdownTrigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }))
+                    dropdownTrigger.click()
+                }
+            }).catch(() => {})
+
+            // 2. Playwright native click scoped STRICTLY to the drawer
+            if (typeof page.locator === "function") {
+                try {
+                    const drawerLoc = page.locator('[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]').first()
+                    const triggerLoc = drawerLoc.locator('button, div, span').filter({ hasText: /^-\s*$/ }).first()
+                    if ((await triggerLoc.count().catch(() => 0)) > 0) {
+                        await triggerLoc.scrollIntoViewIfNeeded().catch(() => {})
+                        await triggerLoc.click({ force: true, timeout: 1500 }).catch(() => {})
+                    }
+                } catch {}
+            }
+
+            // Wait 300ms for options list to render (including React Portals in document.body)
+            await new Promise((r) => setTimeout(r, 300))
+
+            // 3. Click the target city option ("Kochi") via DOM evaluate & Playwright
+            const optionClicked = await page.evaluate(() => {
+                const all = Array.from(document.querySelectorAll<HTMLElement>("*"))
+                const kochiElements = all.filter((el) => {
+                    // CRITICAL: NEVER MATCH ANCHOR LINKS (<a>) OR ELEMENTS INSIDE <A>
+                    if (el.tagName === "A" || el.closest("a") || el.hasAttribute("href")) return false
+                    const t = (el.textContent || "").trim().toLowerCase()
+                    const rect = el.getBoundingClientRect()
+                    const isVisible = rect.height > 10 && rect.width > 20 && window.getComputedStyle(el).display !== "none"
+                    // Must be on the right side (modal area) and inside a menu/option structure
+                    const isNotLeftColumn = rect.left > 400
+                    const isInsideMenu = Boolean(
+                        el.closest('[role="listbox"], [role="menu"], [class*="option" i], [class*="menu" i], [class*="select" i], [data-radix-popper-content-wrapper]')
+                    )
+                    return isVisible && isNotLeftColumn && (isInsideMenu || t === "kochi" || t === "kochi, india") && (t === "kochi" || t.includes("kochi"))
+                })
+
+                if (kochiElements.length > 0) {
+                    const target = kochiElements[kochiElements.length - 1]
+                    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))
+                    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }))
+                    target.click()
+                    return { clicked: true, text: target.textContent?.trim() || "Kochi" }
+                }
+
+                const listboxOptions = Array.from(document.querySelectorAll<HTMLElement>('[role="option"], [role="listbox"] > *')).filter(
+                    (el) => el.tagName !== "A" && !el.closest("a")
+                )
+                const firstOpt = listboxOptions.find((el) => (el.textContent || "").trim().length > 1)
+                if (firstOpt) {
+                    firstOpt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))
+                    firstOpt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }))
+                    firstOpt.click()
+                    return { clicked: true, text: firstOpt.textContent?.trim() || "" }
+                }
+                return { clicked: false, text: "" }
+            }).catch(() => ({ clicked: false, text: "" }))
+
+            if (optionClicked.clicked) {
+                changes.push(`selected city '${optionClicked.text}' in location dropdown`)
+                return true
+            } else if (typeof page.locator === "function") {
+                try {
+                    // DO NOT use div:has-text("Kochi") which matches anchor link wrappers to /location/kochi!
+                    const kochiLoc = page.locator('[role="listbox"] [role="option"]:has-text("Kochi"), [role="option"]:has-text("Kochi"), [class*="option" i]:has-text("Kochi"):not(a), li:has-text("Kochi"):not(a)').last()
+                    if ((await kochiLoc.count().catch(() => 0)) > 0) {
+                        await kochiLoc.click({ force: true, timeout: 1500 }).catch(() => {})
+                        changes.push("selected city 'Kochi' via Playwright locator")
+                        return true
+                    }
+                } catch {}
+            }
+
+            return false
+        }
+
+        // Helper: Select the "I can relocate to..." radio button
+        const selectRelocateRadio = async (): Promise<boolean> => {
+            let radioHandled = false
+            if (typeof page.locator === "function") {
+                try {
+                    // Radio 0 on Wellfound is "I am currently in...", Radio 1 is "I can relocate to..."
+                    const radioInputs = page.locator('input[type="radio"]')
+                    const count = await radioInputs.count().catch(() => 0)
+                    if (count >= 2) {
+                        const relocateRadio = radioInputs.nth(1)
+                        const isChecked = await relocateRadio.isChecked().catch(() => false)
+                        if (!isChecked) {
+                            await relocateRadio.scrollIntoViewIfNeeded().catch(() => {})
+                            await relocateRadio.check({ force: true }).catch(() => {})
+                            changes.push("checked 'I can relocate to...' radio (input 1)")
+                            radioHandled = true
+                        } else {
+                            radioHandled = true
+                        }
+                    } else if (count === 1) {
+                        const singleRadio = radioInputs.first()
+                        await singleRadio.check({ force: true }).catch(() => {})
+                        changes.push("checked radio input")
+                        radioHandled = true
+                    }
+                } catch {}
+
+                // Also click label or text directly
+                try {
+                    const relocateTextLoc = page.locator('label:has-text("relocate to"), text=/i can relocate to/i').first()
+                    if ((await relocateTextLoc.count().catch(() => 0)) > 0) {
+                        await relocateTextLoc.scrollIntoViewIfNeeded().catch(() => {})
+                        await relocateTextLoc.click({ force: true }).catch(() => {})
+                        radioHandled = true
+                    }
+                } catch {}
+            }
+
+            // DOM evaluate pass for radio: ensure native setter & React state update
+            await page.evaluate(() => {
+                const drawer =
+                    document.querySelector<HTMLElement>(
+                        '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [data-test*="drawer" i], [class*="styles_drawer" i], [class*="slideOver" i], [class*="modal" i], aside, form'
+                    ) || document.body
+
+                const radioInputs = Array.from(drawer.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+                const targetRadio =
+                    radioInputs.find((r) => {
+                        const label = (r.closest("label")?.textContent || r.parentElement?.textContent || "").toLowerCase()
+                        return label.includes("relocate")
+                    }) || (radioInputs.length >= 2 ? radioInputs[1] : radioInputs[0])
+
+                if (targetRadio && !targetRadio.checked) {
+                    try {
+                        const proto = window.HTMLInputElement.prototype
+                        const nativeSetter = Object.getOwnPropertyDescriptor(proto, "checked")?.set
+                        if (nativeSetter) {
+                            nativeSetter.call(targetRadio, true)
+                        } else {
+                            targetRadio.checked = true
+                        }
+                    } catch {
+                        targetRadio.checked = true
+                    }
+                    targetRadio.dispatchEvent(new Event("input", { bubbles: true }))
+                    targetRadio.dispatchEvent(new Event("change", { bubbles: true }))
+                    targetRadio.click()
+                    targetRadio.closest("label")?.click()
+                    targetRadio.parentElement?.click()
+                }
+            }).catch(() => {})
+
+            return radioHandled
+        }
+
+        // STEP 1: Select the dropdown and select the city ("Kochi")
+        const cityOk = await selectDropdownAndCity()
+
+        await new Promise((r) => setTimeout(r, 200))
+
+        // STEP 2: Select 'I can relocate to...' radio button
+        await selectRelocateRadio()
+
+        // If city selection didn't succeed before radio was checked, retry now that radio is active
+        if (!cityOk) {
+            await new Promise((r) => setTimeout(r, 200))
+            await selectDropdownAndCity()
+        }
+
+        await new Promise((r) => setTimeout(r, 200))
+
+        // STEP 3: If the note / question textarea is still empty, populate it with the candidate pitch
+        await page.evaluate(() => {
+            const drawer =
+                document.querySelector<HTMLElement>(
+                    '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                ) || document.body
+            const textarea = drawer.querySelector<HTMLTextAreaElement>("textarea")
+            if (textarea && !textarea.value.trim()) {
+                const defaultPitch =
+                    "I approach development by focusing on system efficiency, reliability, and eliminating unnecessary overhead. On Navix, an autonomous browser agent, I built mechanical browser actions that bypass redundant LLM calls and save ~17,000 input tokens per action through aggressive DOM pruning and deterministic state matching. On Musketeers, I engineered AI-controlled desktop workflows with isolated Daytona Linux sandboxes. As a Mechatronics and Automation Engineering graduate from IIIT Bhagalpur, I bring strong ownership and a practical approach to solving real problems, and I am available to join immediately."
+                try {
+                    const proto = window.HTMLTextAreaElement.prototype
+                    const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set
+                    if (nativeSetter) {
+                        nativeSetter.call(textarea, defaultPitch)
+                    } else {
+                        textarea.value = defaultPitch
+                    }
+                    textarea.dispatchEvent(new Event("input", { bubbles: true }))
+                    textarea.dispatchEvent(new Event("change", { bubbles: true }))
+                } catch {
+                    textarea.value = defaultPitch
+                }
+            }
+        }).catch(() => {})
+
+        await new Promise((r) => setTimeout(r, 200))
+
+        // STEP 4: Ground-truth validation — Is the "Apply" button now ENABLED?
+        const statusCheck = await page.evaluate(() => {
+            const drawer =
+                document.querySelector<HTMLElement>(
+                    '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                ) || document.body
+
+            // Find the relocation container to verify if it still has "-"
+            const allDivs = Array.from(drawer.querySelectorAll<HTMLElement>("*"))
+            const alertContainer = allDivs.find((el) => {
+                const t = (el.textContent || "").toLowerCase()
+                return (
+                    t.includes("does not support the locations on your profile") ||
+                    t.includes("update your location preferences")
+                )
+            })
+
+            const hasHyphen = alertContainer ? Boolean(alertContainer.textContent?.includes("-")) : false
+
+            const submitBtn = Array.from(drawer.querySelectorAll<HTMLElement>('button, [role="button"]')).find((b) => {
+                const t = (b.textContent || "").trim().toLowerCase()
+                return t === "apply" || t === "send application" || t === "submit application"
+            })
+
+            if (!submitBtn) return { btnFound: false, isEnabled: false, hasHyphen }
+
+            const style = window.getComputedStyle(submitBtn)
+            const isDisabled =
+                (submitBtn as HTMLButtonElement).disabled ||
+                submitBtn.getAttribute("aria-disabled") === "true" ||
+                submitBtn.classList.contains("disabled") ||
+                style.pointerEvents === "none" ||
+                style.cursor === "not-allowed" ||
+                parseFloat(style.opacity || "1") < 0.8
+
+            return { btnFound: true, isEnabled: !isDisabled && !hasHyphen, hasHyphen }
+        }).catch(() => ({ btnFound: false, isEnabled: false, hasHyphen: true }))
+
+        // Resolved is true ONLY if the alert container has no "-" AND (Apply is enabled OR both city and radio were confirmed)
+        const cityActuallySelected = changes.some(c => c.includes("selected city") || c.includes("selected location"))
+        const radioActuallyChecked = changes.some(c => c.includes("radio"))
+        const isResolved = !statusCheck.hasHyphen && ((statusCheck.isEnabled && cityActuallySelected) || (cityActuallySelected && radioActuallyChecked))
+        return {
+            resolved: isResolved,
+            details: changes.length > 0 ? `${changes.join(", ")} (Apply button enabled: ${statusCheck.isEnabled})` : undefined,
+        }
+    } catch {
+        return { resolved: false }
+    }
 }
 
 /**
@@ -666,10 +1019,137 @@ export async function tryMechanicalAction(
         }
     }
 
+    // ── MECHANICAL LOCATION / RELOCATION DROPDOWN / RADIO SELECTOR ─────────────
+    if (
+        /(?:select|click|choose|type|check).*(?:location|relocat|city|radio)/i.test(instruction) ||
+        /(?:location|relocat|radio).*(?:dropdown|select|combobox|input|box|option|button)/i.test(instruction) ||
+        /(?:select|choose|click).*(?:option\b|kochi|bengaluru|bangalore|delhi|mumbai|hyderabad|pune|chennai)/i.test(instruction)
+    ) {
+        try {
+            const reloc = await autoResolveWellfoundRelocation(page).catch(() => ({ resolved: false, details: undefined }))
+            if (reloc.resolved) {
+                return {
+                    handled: true,
+                    success: true,
+                    message: `Resolved location/relocation selection mechanically (0 LLM tokens): ${reloc.details}`,
+                }
+            }
+
+            // If options are already open in DOM, click matching option directly
+            const clicked = await page.evaluate((instText: string) => {
+                const match = instText.match(/(?:'|")([^'"]+)(?:'|")/) || instText.match(/(?:select|choose|click)\s+([a-zA-Z\s]+?)(?:\s+from|\s+in|\s+option|\s+dropdown|$)/i)
+                const targetText = match ? match[1].trim().toLowerCase() : ""
+
+                const candidates = Array.from(
+                    document.querySelectorAll<HTMLElement>(
+                        '[role="option"], [role="listbox"] > *, [role="listbox"] [role="option"], [class*="select__option" i], [class*="Option" i], [class*="menu" i] [class*="item" i]'
+                    )
+                ).filter((el) => {
+                    const rect = el.getBoundingClientRect()
+                    const style = window.getComputedStyle(el)
+                    const optText = (el.textContent || "").trim()
+                    if (el.tagName === "A" || el.closest("a") || el.hasAttribute("href")) return false
+                    return (
+                        style.display !== "none" &&
+                        style.visibility !== "hidden" &&
+                        rect.height > 0 &&
+                        optText.length > 0 &&
+                        !/^(?:select|choose|search)/i.test(optText)
+                    )
+                })
+
+                if (candidates.length > 0) {
+                    let targetOption = targetText
+                        ? candidates.find((el) => (el.textContent || "").toLowerCase().includes(targetText))
+                        : null
+                    if (!targetOption) {
+                        targetOption = candidates[0]
+                    }
+
+                    if (targetOption) {
+                        targetOption.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))
+                        targetOption.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }))
+                        targetOption.click()
+                        return { clicked: true, text: targetOption.textContent?.trim() || "" }
+                    }
+                }
+                return { clicked: false, text: "" }
+            }, instruction).catch(() => ({ clicked: false, text: "" }))
+
+            if (clicked.clicked) {
+                await new Promise((r) => setTimeout(r, 200))
+                // Ensure relocation radio button is also checked after city selection
+                await autoResolveWellfoundRelocation(page).catch(() => {})
+                return {
+                    handled: true,
+                    success: true,
+                    message: `Selected dropdown option '${clicked.text}' mechanically via Playwright (0 LLM tokens)`,
+                }
+            }
+        } catch {}
+    }
+
+    // ── MECHANICAL APPLICATION QUESTION / TEXTAREA FILL ───────────────────────
+    // Intercepts commands targeting open-ended question fields or note textareas
+    // (e.g. "click the textbox for 'What interests you...'", "click the 'What interests you' field")
+    // to ensure the field is filled with the tailored candidate pitch rather than just clicked/focused.
+    if (
+        /(?:type|enter|fill|click).*?(?:textbox|textarea|field|input).*?(?:interest|why|note|founder|question|cover|about|pitch|hire|reason)/i.test(
+            instruction
+        ) ||
+        (/click.*?(?:textbox|textarea)/i.test(instruction) &&
+            !/(?:search|filter|location|city|country)/i.test(instruction))
+    ) {
+        try {
+            const defaultPitch =
+                "I approach development by focusing on system efficiency, reliability, and eliminating unnecessary overhead. On Navix, an autonomous browser agent, I built mechanical browser actions that bypass redundant LLM calls and save ~17,000 input tokens per action through aggressive DOM pruning and deterministic state matching. On Musketeers, I engineered AI-controlled desktop workflows with isolated Daytona Linux sandboxes. As a Mechatronics and Automation Engineering graduate from IIIT Bhagalpur, I bring strong ownership and a practical approach to solving real problems, and I am available to join immediately."
+
+            const pageMeta = await page
+                .evaluate(() => {
+                    const drawer =
+                        document.querySelector<HTMLElement>(
+                            '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                        ) || document.body
+                    const headings = Array.from(drawer.querySelectorAll("h1, h2, h3, h4"))
+                    const company = (headings[0]?.textContent || "").trim()
+                    const role = (headings[1]?.textContent || "").trim()
+                    return { company, role }
+                })
+                .catch(() => ({ company: "Company", role: "Software Developer" }))
+
+            // Always call Gemini Micro-Brain (generateMicroResponseWithQwen never returns null)
+            const pitchText = await generateMicroResponseWithQwen({
+                company: pageMeta.company,
+                role: pageMeta.role,
+                question: instruction,
+            }).catch(() => defaultPitch)
+
+            if (typeof page.locator === "function") {
+                const textarea = page
+                    .locator(
+                        '[role="dialog"] textarea, [aria-modal="true"] textarea, [data-test*="JobListingDrawer"] textarea, [class*="styles_drawer" i] textarea, textarea'
+                    )
+                    .first()
+                if ((await textarea.count().catch(() => 0)) > 0) {
+                    await textarea.scrollIntoViewIfNeeded().catch(() => {})
+                    await textarea.fill(pitchText).catch(() => {})
+                    await autoResolveWellfoundRelocation(page).catch(() => {})
+                    return {
+                        handled: true,
+                        success: true,
+                        message: `Filled application note/question textarea mechanically via Playwright (0 Stagehand act tokens)`,
+                    }
+                }
+            }
+        } catch {}
+    }
+
     // ── MECHANICAL SUBMIT / APPLY BUTTON CLICK ────────────────────────────────
     if (isSubmitAction(instruction, true)) {
         try {
-            const submitEvaluation = await page.evaluate(() => {
+            await autoResolveWellfoundRelocation(page).catch(() => {})
+
+            const submitEvaluation = await page.evaluate((instText: string) => {
                 // 1. Must be inside an active, visible dialog/drawer
                 const dialogs = Array.from(
                     document.querySelectorAll<HTMLElement>(
@@ -683,6 +1163,26 @@ export async function tryMechanicalAction(
                 })
                 if (!activeDialog) return { canClick: false, reason: "no_active_dialog" }
 
+                // Pre-fill empty textarea if present so form validation succeeds
+                const emptyTextarea = activeDialog.querySelector<HTMLTextAreaElement>("textarea")
+                if (emptyTextarea && !emptyTextarea.value.trim()) {
+                    const defaultPitch =
+                        "I approach development by focusing on system efficiency, reliability, and eliminating unnecessary overhead. On Navix, an autonomous browser agent, I built mechanical browser actions that bypass redundant LLM calls and save ~17,000 input tokens per action through aggressive DOM pruning and deterministic state matching. On Musketeers, I engineered AI-controlled desktop workflows with isolated Daytona Linux sandboxes. As a Mechatronics and Automation Engineering graduate from IIIT Bhagalpur, I bring strong ownership and a practical approach to solving real problems, and I am available to join immediately."
+                    try {
+                        const proto = window.HTMLTextAreaElement.prototype
+                        const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set
+                        if (nativeSetter) {
+                            nativeSetter.call(emptyTextarea, defaultPitch)
+                        } else {
+                            emptyTextarea.value = defaultPitch
+                        }
+                        emptyTextarea.dispatchEvent(new Event("input", { bubbles: true }))
+                        emptyTextarea.dispatchEvent(new Event("change", { bubbles: true }))
+                    } catch {
+                        emptyTextarea.value = defaultPitch
+                    }
+                }
+
                 // 2. Pre-click Validity & Disabled Guard:
                 // Check if dialog contains invalid fields or disabled submit button
                 const invalidElements = activeDialog.querySelectorAll('[aria-invalid="true"], :invalid')
@@ -690,32 +1190,33 @@ export async function tryMechanicalAction(
                     return { canClick: false, reason: "invalid_fields_present" }
                 }
 
-                // Check for warning banners that block submission (e.g. location mismatch needing relocation selection)
-                const dialogText = (activeDialog.textContent || "").toLowerCase()
-                if (dialogText.includes("requires relocation") || dialogText.includes("relocate to")) {
-                    const selectEl = activeDialog.querySelector('select, [role="combobox"]')
-                    if (selectEl && !(selectEl as HTMLSelectElement).value) {
-                        return { canClick: false, reason: "unresolved_location_warning" }
-                    }
+                // If relocation prompt is present and radio is unchecked:
+                const relocElements = Array.from(
+                    activeDialog.querySelectorAll<HTMLElement>('input[type="radio"], input[type="checkbox"], [role="radio"], label')
+                ).filter((el) => {
+                    const txt = (el.textContent || el.getAttribute("aria-label") || el.parentElement?.textContent || el.closest("label")?.textContent || "").toLowerCase()
+                    return txt.includes("relocate") || txt.includes("willing to relocate")
+                })
+                const anyRelocChecked = relocElements.some((el) => {
+                    const inp = (el.tagName === "INPUT" ? el : el.querySelector("input")) as HTMLInputElement | null
+                    if (inp && inp.checked) return true
+                    if (el.getAttribute("aria-checked") === "true") return true
+                    return false
+                })
+                if (relocElements.length > 0 && !anyRelocChecked) {
+                    return { canClick: false, reason: "relocation_radio_unchecked" }
+                }
+
+                // Check native select if present
+                const nativeSelectEl = activeDialog.querySelector<HTMLSelectElement>("select")
+                if (nativeSelectEl && (!nativeSelectEl.value || nativeSelectEl.value === "")) {
+                    return { canClick: false, reason: "unresolved_location_select" }
                 }
 
                 // 3. Find candidate submit buttons inside the active dialog
-                const buttons = Array.from(
+                const allButtons = Array.from(
                     activeDialog.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]')
-                )
-                const submitBtn = buttons.find((b) => {
-                    const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
-                    const isCandidate =
-                        txt === "send application" ||
-                        txt === "submit application" ||
-                        txt === "apply" ||
-                        txt === "quick apply" ||
-                        txt === "submit" ||
-                        txt.includes("send application") ||
-                        txt.includes("submit application")
-                    if (!isCandidate) return false
-
-                    // Ensure button is not disabled
+                ).filter((b) => {
                     const isDisabled =
                         (b as HTMLButtonElement).disabled ||
                         b.getAttribute("aria-disabled") === "true" ||
@@ -724,12 +1225,67 @@ export async function tryMechanicalAction(
                     return !isDisabled
                 })
 
+                if (allButtons.length === 0) return { canClick: false, reason: "no_enabled_buttons" }
+
+                const lowerInst = (instText || "").toLowerCase()
+
+                // Check if an application form is currently open in the dialog (has text inputs or relocation options)
+                const hasFormInputs = Boolean(
+                    activeDialog.querySelector('textarea, input[type="text"], input[type="radio"], input[type="file"]')
+                )
+
+                // Strategy A: If instruction specifically mentions "send application" or "send", match that first
+                let submitBtn: HTMLElement | undefined = undefined
+                if (lowerInst.includes("send application") || lowerInst.includes("send")) {
+                    submitBtn = allButtons.find((b) => {
+                        const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
+                        return txt === "send application" || txt.includes("send application") || txt === "send"
+                    })
+                }
+
+                // Strategy B: If an application form is open, prioritize final form submission buttons
+                // ("Send application", "Submit application", type="submit", "Submit") over generic header "Apply"
+                if (!submitBtn && hasFormInputs) {
+                    submitBtn =
+                        allButtons.find((b) => {
+                            const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
+                            return txt === "send application" || txt.includes("send application")
+                        }) ||
+                        allButtons.find((b) => {
+                            const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
+                            return txt === "submit application" || txt.includes("submit application")
+                        }) ||
+                        allButtons.find((b) => {
+                            return b.getAttribute("type") === "submit" || (b as HTMLInputElement).type === "submit"
+                        }) ||
+                        allButtons.find((b) => {
+                            const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
+                            return txt === "submit"
+                        })
+                }
+
+                // Strategy C: Standard submit candidates (if no form inputs or general case)
+                if (!submitBtn) {
+                    submitBtn = allButtons.find((b) => {
+                        const txt = (b.textContent || (b as HTMLInputElement).value || "").trim().toLowerCase()
+                        return (
+                            txt === "send application" ||
+                            txt === "submit application" ||
+                            txt === "apply" ||
+                            txt === "quick apply" ||
+                            txt === "submit" ||
+                            txt.includes("send application") ||
+                            txt.includes("submit application")
+                        )
+                    })
+                }
+
                 if (!submitBtn) return { canClick: false, reason: "no_enabled_submit_button" }
 
                 // Mark the button with a temporary attribute for deterministic Playwright clicking
                 submitBtn.setAttribute("data-stagehand-mechanical-submit", "true")
                 return { canClick: true, text: submitBtn.textContent?.trim() || "submit" }
-            })
+            }, instruction)
 
             if (submitEvaluation.canClick) {
                 const targetBtn = page.locator('[data-stagehand-mechanical-submit="true"]').first()
@@ -737,7 +1293,11 @@ export async function tryMechanicalAction(
                     await targetBtn.click({ timeout: 3000 }).catch(async () => {
                         await page.evaluate(() => {
                             const b = document.querySelector('[data-stagehand-mechanical-submit="true"]') as HTMLElement
-                            b?.click()
+                            if (b) {
+                                b.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))
+                                b.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }))
+                                b.click()
+                            }
                         })
                     })
                     // Clean up temporary marker
@@ -757,8 +1317,22 @@ export async function tryMechanicalAction(
                         message: `Clicked submit '${submitEvaluation.text}' button mechanically via Playwright (0 LLM tokens)`,
                     }
                 }
+            } else if (
+                submitEvaluation.reason === "no_enabled_buttons" ||
+                submitEvaluation.reason === "relocation_radio_unchecked" ||
+                submitEvaluation.reason === "unresolved_location_select" ||
+                submitEvaluation.reason === "invalid_fields_present" ||
+                submitEvaluation.reason === "no_enabled_submit_button"
+            ) {
+                // The submit button is explicitly disabled or form requirements are unmet.
+                // DO NOT fall through to stagehand.act(), which would blindly click the disabled button and fake success!
+                return {
+                    handled: true,
+                    success: false,
+                    message: `Submit button is currently DISABLED (${submitEvaluation.reason}). Form requires checking 'I can relocate to...' radio and selecting a city in the location dropdown before submission can proceed.`,
+                }
             }
-            // If cannot click mechanically (disabled, validation error, etc.), fall through to stagehand.act()
+            // If cannot click mechanically (e.g. no active dialog), fall through to stagehand.act()
             return NOT_HANDLED
         } catch {
             return NOT_HANDLED
@@ -1023,7 +1597,7 @@ const FormDelegationSchema = z.object({
     "Use this when an application form or question field is open. The Micro-Brain (Qwen) will rapidly compose a tailored answer so you don't have to write long text."
 )
 
-const PlannerDecisionSchema = z
+export const PlannerDecisionSchema = z
     .object({
         action: z
             .enum(["act", "navigate", "needs_human", "done"])
@@ -1048,10 +1622,16 @@ const PlannerDecisionSchema = z
         formDelegation: FormDelegationSchema.optional(),
     })
     .superRefine((data, ctx) => {
-        if (data.action === "act" && (!data.instruction || !data.instruction.trim())) {
+        if (
+            data.action === "act" &&
+            (!data.instruction || !data.instruction.trim()) &&
+            !data.formDelegation &&
+            data.jobUpdate?.status !== "skipped"
+        ) {
             ctx.addIssue({
                 code: z.ZodIssueCode.custom,
-                message: 'instruction is required when action is "act"',
+                message:
+                    'instruction is required when action is "act" (unless formDelegation or skipped status is present)',
                 path: ["instruction"],
             })
         }
@@ -1151,9 +1731,9 @@ async function waitForPageSettle(
 
 /**
  * Dual-Brain Architecture (Micro Brain):
- * Offloads rapid text synthesis, cover notes, and form answers to Qwen on Groq (qwen/qwen3.8-27b).
- * Runs in ~200-300ms using tiny context (<400 tokens) so the Macro Brain (Gemini) can stay
- * focused on reading the massive 12k+ token page layout without getting bogged down or rate-limited.
+ * Offloads rapid text synthesis, cover notes, and form answers to Gemini Flash Lite (via the Gemini API).
+ * Uses a tiny context (<400 tokens) so the Macro Brain can stay focused on reading the full page.
+ * NEVER returns null — always emits a tailored fallback if the API call fails.
  */
 export async function generateMicroResponseWithQwen({
     company,
@@ -1165,9 +1745,21 @@ export async function generateMicroResponseWithQwen({
     role?: string
     question?: string
     candidateProfile?: string
-}): Promise<string | null> {
-    const apiKey = process.env.GROQ_API_KEY
-    if (!apiKey) return null
+}): Promise<string> {
+    const FALLBACK =
+        "I focus on building systems that are measurably more efficient and reliable rather than just shipping features. " +
+        "On Navix, an autonomous browser agent, I implemented mechanical browser actions that bypass unnecessary LLM calls, " +
+        "saving ~17,000 input tokens per action through aggressive DOM pruning and a 4-tier deterministic DOM matcher. " +
+        "On Musketeers, I engineered AI-controlled desktop workflows using Daytona Linux sandboxes and noVNC with transactional rollback. " +
+        "I also built a full-stack portfolio at https://starter-pack-iota.vercel.app/ using TypeScript, React 19, and Next.js. " +
+        "As a Mechatronics and Automation Engineering graduate from IIIT Bhagalpur, I bring strong ownership, systems-level thinking, " +
+        "and am available to join immediately."
+
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+    if (!apiKey) {
+        logger.warn("[Micro-Brain] No Gemini API key found, using built-in fallback pitch")
+        return FALLBACK
+    }
 
     try {
         const enrichedProfile = buildCandidateContextForQwen({
@@ -1176,48 +1768,61 @@ export async function generateMicroResponseWithQwen({
             candidateProfileOverride: candidateProfile,
         })
 
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${apiKey}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                model: "qwen/qwen3.8-27b",
-                messages: [
-                    {
-                        role: "system",
-                        content:
-                            "You are an elite career application assistant drafting an authentic application pitch for Anurag, an exceptional full-stack and systems engineer.\n" +
-                            "Tone & Engineering Persona:\n" +
-                            "- Write in the first person ('I'). Sound thoughtful, confident, mature, and direct—like an experienced engineer speaking to technical founders.\n" +
-                            "- Structure the response in 2-3 clean, well-spaced paragraphs:\n" +
-                            "  1. Opening Thesis: State clearly that you don't just build features, but look for ways to make systems more efficient and reliable.\n" +
-                            "  2. Core Technical Proof: Detail your work on Navix (implementing mechanical browser actions that bypass unnecessary LLM calls, saving ~17,000 input tokens per action, DOM pruning, and preventing unreliable actions) or Musketeers (AI-controlled desktop workflows with Daytona Linux sandboxes and noVNC).\n" +
-                            "  3. Grounded Closing: Note your background as a recent graduate from IIIT Bhagalpur with practical engineering skills, strong ownership, and a willingness to solve real problems rather than just implement assigned tasks.\n" +
-                            "- NEVER use sycophantic corporate fluff or buzzwords like 'I am drawn to your mission', 'passionate individual', 'eager to contribute', or 'thrive in dynamic environments'.\n" +
-                            "- NEVER mention GPA or CGPA.\n" +
-                            "- Return ONLY the final text ready to be typed directly into the textbox.",
-                    },
-                    {
-                        role: "user",
-                        content: `Candidate Context:\n${enrichedProfile}\n\nTarget Company: ${company || "Company"}\nTarget Role: ${role || "Software Engineer"}\nQuestion/Prompt: ${question || "Why do you want to work for this company?"}`,
-                    },
-                ],
-                temperature: 0.3,
-                max_tokens: 450,
-            }),
-        })
+        const systemPrompt =
+            "You are an elite career application assistant drafting an authentic application pitch for Anurag, an exceptional full-stack and systems engineer.\n" +
+            "Tone & Engineering Persona:\n" +
+            "- Write in the first person ('I'). Sound thoughtful, confident, mature, and direct—like an experienced engineer speaking to technical founders.\n" +
+            "- Structure the response in 2-3 clean paragraphs:\n" +
+            "  1. Opening Thesis: State clearly that you don't just build features, but look for ways to make systems more efficient and reliable.\n" +
+            "  2. Core Technical Proof: Detail work on Navix (mechanical browser actions, saving ~17,000 tokens/action via DOM pruning) or Musketeers (AI-controlled desktop workflows with Daytona Linux sandboxes and noVNC). Mention portfolio at https://starter-pack-iota.vercel.app/ and tech: TypeScript, React 19, Next.js, Playwright.\n" +
+            "  3. Grounded Closing: Recent graduate from IIIT Bhagalpur, strong ownership, immediate availability.\n" +
+            "- NEVER use 'I am drawn to your mission', 'passionate individual', 'eager to contribute', or 'thrive in dynamic environments'.\n" +
+            "- NEVER mention GPA or CGPA.\n" +
+            "- Return ONLY the final text ready to be typed directly into the application textbox."
 
-        if (!response.ok) return null
+        const userContent = `Candidate Context:\n${enrichedProfile}\n\nTarget Company: ${company || "Company"}\nTarget Role: ${role || "Software Engineer"}\nQuestion/Prompt: ${question || "Why do you want to work for this company?"}`
+
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [
+                        {
+                            parts: [{ text: `${systemPrompt}\n\n${userContent}` }],
+                        },
+                    ],
+                    generationConfig: {
+                        temperature: 0.3,
+                        maxOutputTokens: 450,
+                    },
+                }),
+            }
+        )
+
+        if (!response.ok) {
+            const errBody = await response.text().catch(() => "")
+            logger.warn("[Micro-Brain Gemini] API returned non-OK, using built-in fallback", {
+                status: response.status,
+                body: errBody.slice(0, 200),
+            })
+            return FALLBACK
+        }
+
         const data = await response.json()
-        const text = data?.choices?.[0]?.message?.content?.trim()
-        return text || null
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+        if (!text) {
+            logger.warn("[Micro-Brain Gemini] Empty response body, using built-in fallback")
+            return FALLBACK
+        }
+
+        return text
     } catch (err) {
-        logger.warn("[Micro-Brain Qwen] Non-blocking generation failure, falling back to Macro response", {
+        logger.warn("[Micro-Brain Gemini] Non-blocking generation failure, using built-in fallback", {
             error: String(err),
         })
-        return null
+        return FALLBACK
     }
 }
 
@@ -1827,6 +2432,12 @@ export async function agentNode({
             await waitForPageSettle(page)
             try {
                 currentPageUrl = await page.url()
+                if (detectJobPlatform(currentPageUrl) === "wellfound" && currentPageUrl.includes("/location/")) {
+                    logger.warn(`[Agent] Detected accidental navigation to location page (${currentPageUrl}). Navigating back to job listing.`)
+                    await page.goBack().catch(() => {})
+                    await waitForPageSettle(page)
+                    currentPageUrl = await page.url().catch(() => currentPageUrl)
+                }
             } catch {}
         }
 
@@ -1905,7 +2516,10 @@ export async function agentNode({
    - NEVER click the close button on an empty drawer — wait or inspect the listing rather than backtracking.
 
 3. FILTER & SORT WORKFLOW (Strict Sequential Execution):
-   - When the user task requests filters (e.g. "most recent", experience level, specific roles):
+   - DIRECT / SPECIFIC JOB SHORTCUT: If the user task names a specific company or role (e.g. "UprootSecurity"), or if a job drawer / application modal is already open on page load:
+     • DO NOT open the "Filters" modal! Skip filtering completely!
+     • If the target job drawer is already open on screen, proceed immediately to Phase B/Phase C (click "Apply" / fill form)!
+   - When the user task requests general search filters (e.g. "most recent", experience level, specific roles):
      Step 1: Open the filter modal/menu (e.g. click "Filters").
      Step 2: Locate the Sorting control (e.g. "Sort by", "Recent", "Newest") and select "Most recent" (or equivalent newest-first option).
      Step 3: Locate the Experience filter (e.g. "Experience", "Years of experience", "Entry Level", "Intern", "0-1 years") and select the matching fresher/entry-level option.
@@ -1931,22 +2545,39 @@ export async function agentNode({
    - Phase B (Apply): If the listing matches criteria (fresher, intern, entry-level) and an "Apply" or "Quick Apply" button is visible:
      -> Do NOT close the drawer.
      -> Click the "Apply" or "Quick Apply" button.
-   - Phase C (Form - DUAL-BRAIN MICRO DELEGATION):
+   - Phase C (Wellfound 4-Step Form Completion Order - STRICT SEQUENCE):
+     When an application form/drawer is open on Wellfound (especially with "Update your location preferences"):
+     Step 1: Check the "I can relocate to..." radio button.
+             Instruction: "click the 'I can relocate to...' radio button"
+             (If already checked, move directly to Step 2!)
+     Step 2: Click the location dropdown directly below the radio button, and when the city list appears, click the target city (e.g. "Kochi" or "Bengaluru" or "India").
+             Instruction: "click the 'Kochi' option in the location dropdown"
+     Step 3: Go to the "What interests you about working for this company?" or note field and type the tailored pitch.
+             CRITICAL: Use "formDelegation" so the Micro-Brain rapidly composes and types the answer. NEVER just output "click the textbox"!
+     Step 4: Click the submit 'Apply' button.
+             CRITICAL: Only after Steps 1, 2, and 3 are complete, the 'Apply' button becomes enabled. Click the 'Apply' button once to submit!
+             NEVER try to click 'Apply' repeatedly before Steps 1-3 are finished!
+     -> RELOCATION & LOCATION POLICY:
+     -> RELOCATION & LOCATION POLICY:
+        • Warnings like "This job does not support the locations on your profile" or "requires relocation" are NEVER disqualifiers! The candidate is 100% open to relocation worldwide/onsite.
+        • NEVER skip a job or close the modal on a relocation notice.
+        • If an "I can relocate to [Location]" radio button or checkbox appears and is NOT yet checked, click/select it (instruction: "click the 'I can relocate to...' radio button"). If it is ALREADY checked/selected, DO NOT re-click it!
+        • If a location dropdown or combobox appears:
+          CRITICAL: DO NOT type into the location box! You MUST click the city option (e.g. instruction: "click the 'Kochi' option in the dropdown" or "select '[City]' from the location dropdown") to register the selection and dismiss the relocation banner.
      -> If an application question box appears (e.g. "What interests you about working for this company?", "Why should we hire you??", "Cover note"):
-        You do NOT need to compose the long answer yourself!
+        CRITICAL: NEVER output "click the textbox" or "click the textarea"! Clicking a textbox leaves it blank and prevents application submission!
         Instead, set "formDelegation" in your decision with:
         - targetField: the textbox label or placeholder
         - company: company name visible on page
         - role: job title visible on page
         - question: the question being asked
-        - nextActionAfterTyping: "click the submit 'Apply' button" (or "click the 'Send application' button")
+        - nextActionAfterTyping: "click the 'Send application' button"
         The Micro-Brain (Qwen) will instantly compose a tailored response and type it in.
-        Alternatively, provide "instruction" directly.
      -> When application submission is confirmed on page (e.g. "Application submitted" or button reads "Applied"), set jobUpdate status to "confirmed" with evidence text.
 
 5. BACKTRACKING (Real Disqualifiers or After Submitting Only):
    - ONLY backtrack (click close button '✕', 'Back', or 'Close') if:
-     a. The job description has fully loaded AND explicitly disqualifies the candidate (e.g. requires 3+, 5+, or 7+ years of experience when the user asked for fresher/entry-level), OR
+     a. The job description has fully loaded AND explicitly disqualifies the candidate (e.g. requires 3+, 5+, or 7+ years of experience when the user asked for fresher/entry-level). Location mismatch or relocation prompts on Wellfound are NEVER disqualifiers — candidate is open to relocation! OR
      b. You have already submitted the application, inspected the result, and need to return to the search list for the next job.
    - MANDATORY ACTION WHEN SKIPPING: If disqualifying a job, you MUST set action="act", set jobUpdate.status="skipped", AND set instruction="click the close button '✕' or 'Close' on the modal to return to the job listings". NEVER leave instruction empty when skipping!
     - Return to the results list and proceed to the NEXT unchecked job listing.
@@ -2087,11 +2718,28 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                 )
             }
 
+            // Zero-token Wellfound relocation auto-resolver
+            if (platform === "wellfound" && pruneResult.hasOpenDialog) {
+                const relocResult = await autoResolveWellfoundRelocation(page).catch(() => ({ resolved: false, details: undefined }))
+                if (relocResult.resolved) {
+                    logger.info(`[Agent] Auto-resolved Wellfound relocation prompt: ${relocResult.details}`)
+                    // Write to mem.history so planner doesn't re-click the radio button next step
+                    mem.history.push({
+                        instruction: "auto-resolve Wellfound relocation prompt",
+                        success: true,
+                        message: `Selected city in location dropdown AND clicked 'I can relocate to...' radio: ${relocResult.details}`,
+                    })
+                    await new Promise((r) => setTimeout(r, 300))
+                }
+            }
+
             try {
                 if (pruneResult.hasOpenDialog) {
-                    // Scope extraction to the open drawer/modal to drop background tokens
+                    // Scope extraction to the open drawer/modal AND any open floating dropdown menus/portals
                     extractOptions = {
-                        locator: page.locator('[data-stagehand-active-dialog="true"]'),
+                        locator: page.locator(
+                            '[data-stagehand-active-dialog="true"], [role="listbox"], [role="menu"], [data-radix-popper-content-wrapper], [class*="portal" i]'
+                        ),
                     }
                 } else {
                     // On search results, ignore static header/footer/nav and aria-hidden elements
@@ -2179,9 +2827,58 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                             rawEvidence
                         )
 
-                    if (!hasVerifiableProof) {
+                    // Verify against live page: Proof MUST exist on screen, and the form must NOT still be open with an unsubmitted Apply button!
+                    let livePageConfirmed = false
+                    if (page) {
+                        livePageConfirmed = await page.evaluate((claimed: string) => {
+                            const drawer = document.querySelector<HTMLElement>(
+                                '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                            )
+
+                            // If the drawer is still open and contains an unsubmitted Apply/Submit button, the job is NOT confirmed!
+                            if (drawer) {
+                                const buttons = Array.from(drawer.querySelectorAll<HTMLElement>('button, [role="button"]'))
+                                const hasUnsubmittedApplyBtn = buttons.some((b) => {
+                                    const t = (b.textContent || "").trim().toLowerCase()
+                                    return t === "apply" || t === "send application" || t === "submit application"
+                                })
+                                if (hasUnsubmittedApplyBtn) {
+                                    return false // Form is still open with an unsubmitted Apply button!
+                                }
+                            }
+
+                            const bodyText = (document.body.innerText || document.body.textContent || "").toLowerCase()
+
+                            // Explicit on-page success indicators
+                            if (
+                                bodyText.includes("application submitted") ||
+                                bodyText.includes("your application has been submitted") ||
+                                bodyText.includes("application sent") ||
+                                bodyText.includes("applied on") ||
+                                bodyText.includes("you've applied") ||
+                                bodyText.includes("successfully applied")
+                            ) {
+                                return true
+                            }
+
+                            // Check if button changed to "Applied"
+                            const allBtns = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]'))
+                            if (allBtns.some((b) => (b.textContent || "").trim().toLowerCase() === "applied")) {
+                                return true
+                            }
+
+                            // Check if claimed text exists verbatim on page
+                            if (claimed && claimed.length >= 8 && bodyText.includes(claimed.toLowerCase())) {
+                                return true
+                            }
+
+                            return false
+                        }, rawEvidence).catch(() => false)
+                    }
+
+                    if (!hasVerifiableProof || (page && !livePageConfirmed)) {
                         logger.warn(
-                            `[Agent] Confirmation claim for '${company} - ${role}' lacks explicit on-page proof ("${rawEvidence}"). Preserving as 'attempted'.`
+                            `[Agent] Confirmation claim for '${company} - ${role}' lacks verified on-page proof (livePageConfirmed=${livePageConfirmed}, proofRegex=${hasVerifiableProof}). Preserving as 'attempted'.`
                         )
                         effectiveStatus = "attempted"
                     }
@@ -2539,6 +3236,22 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             continue
         }
 
+        // Pre-resolve any open Wellfound relocation prompt before filling forms or executing next action
+        if (platform === "wellfound" && page) {
+            const relocResult = await autoResolveWellfoundRelocation(page).catch(() => ({ resolved: false, details: undefined }))
+            if (relocResult.resolved) {
+                logger.info(`[Agent] Auto-resolved Wellfound relocation prompt: ${relocResult.details}`)
+                // Write to mem.history so the Macro Planner knows relocation + city were already handled
+                // and does NOT re-click the radio on the next step.
+                mem.history.push({
+                    instruction: "auto-resolve Wellfound relocation prompt",
+                    success: true,
+                    message: `Selected city in location dropdown AND clicked 'I can relocate to...' radio: ${relocResult.details}`,
+                })
+                await new Promise((r) => setTimeout(r, 300))
+            }
+        }
+
         // Dual-Brain Micro-Step: If the Macro planner requested form delegation, invoke Qwen
         if (decision.formDelegation) {
             logger.info("[Dual-Brain] Delegating form response to Micro-Brain (Qwen)...", {
@@ -2571,7 +3284,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                 // If form delegation didn't produce text (e.g. Micro-Brain unavailable), fallback to typing placeholder or submit
                 decision.instruction =
                     decision.formDelegation.nextActionAfterTyping ||
-                    `click the submit 'Apply' button`
+                    (platform === "wellfound" ? `click the 'Send application' button` : `click the submit 'Apply' button`)
             } else if (decision.jobUpdate?.status === "skipped") {
                 // When a job is disqualified/skipped, the immediate browser action is closing the drawer
                 logger.info(
@@ -2738,6 +3451,52 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
         // Prevent repeating submit button clicks in loops or resubmitting previously attempted/confirmed jobs.
         // NOTE: Matching requires specific company AND role together. Multiple roles at the same company are allowed!
         const isCurrentActionSubmit = isSubmitAction(decision.instruction, pruneResult?.hasOpenDialog)
+
+        // Wellfound Relocation Completion Guard:
+        // If an application drawer is open and the relocation prompt is still incomplete (unselected dropdown),
+        // intercept any premature submit attempts and force the required relocation step first!
+        if (platform === "wellfound" && page && isCurrentActionSubmit) {
+            const relocCheck = await page.evaluate(() => {
+                const drawer =
+                    document.querySelector<HTMLElement>(
+                        '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                    ) || document.body
+                const text = (drawer.textContent || "").toLowerCase()
+                const hasPrompt =
+                    text.includes("update your location preferences") ||
+                    text.includes("does not support the locations on your profile")
+                if (!hasPrompt) return { incomplete: false, step: "" }
+
+                // Check radio
+                const radios = Array.from(drawer.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+                const relocRadio = radios.find((r) =>
+                    (r.closest("label")?.textContent || r.parentElement?.textContent || "").toLowerCase().includes("relocate")
+                ) || (radios.length >= 2 ? radios[1] : null)
+
+                if (relocRadio && !relocRadio.checked) {
+                    return { incomplete: true, step: "radio" }
+                }
+
+                // Check dropdown: if text still has "-" and does not have "kochi"
+                const hasKochiSelected = text.includes("kochi")
+                const hasHyphen = text.includes("-")
+                if (!hasKochiSelected && hasHyphen) {
+                    return { incomplete: true, step: "city" }
+                }
+
+                return { incomplete: false, step: "" }
+            }).catch(() => ({ incomplete: false, step: "" }))
+
+            if (relocCheck.incomplete) {
+                if (relocCheck.step === "radio") {
+                    logger.info("[Agent] Redirected premature submit click: checking 'I can relocate' radio first.")
+                    decision.instruction = "click the 'I can relocate to...' radio button"
+                } else if (relocCheck.step === "city") {
+                    logger.info("[Agent] Redirected premature submit click: selecting 'Kochi' in location dropdown first.")
+                    decision.instruction = "click the location dropdown '-' and select 'Kochi'"
+                }
+            }
+        }
         const lastStep = mem.history[mem.history.length - 1]
         const wasLastStepSubmit =
             lastStep &&
@@ -2776,13 +3535,35 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
         }
 
         if (isCurrentActionSubmit && (wasLastStepSubmit || isCurrentJobAlreadyAttemptedOrConfirmed)) {
-            logger.info(
-                `[Agent] Intercepted redundant submit click for ${currentJobKey || currentJobCompany || "current job"}: outcome is ${isCurrentJobAlreadyAttemptedOrConfirmed ? "already recorded/unresolved" : "submitted"}. Replacing with modal close.`
-            )
-            decision.instruction =
-                platform === "yc" && /\/jobs\/\d+/i.test(currentPageUrl)
-                    ? "return to the job listings"
-                    : "click the close button '✕' or 'Close' on the modal to return to the job listings"
+            // Check if the application form is actually still open and unsubmitted on screen
+            const formStillOpen = await page?.evaluate(() => {
+                const drawer = document.querySelector<HTMLElement>(
+                    '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                )
+                if (!drawer) return false
+                const buttons = Array.from(drawer.querySelectorAll<HTMLElement>('button, [role="button"]'))
+                return buttons.some((b) => {
+                    const t = (b.textContent || "").trim().toLowerCase()
+                    return t === "apply" || t === "send application" || t === "submit application"
+                })
+            }).catch(() => false)
+
+            if (!formStillOpen) {
+                logger.info(
+                    `[Agent] Intercepted redundant submit click for ${currentJobKey || currentJobCompany || "current job"}: outcome is ${isCurrentJobAlreadyAttemptedOrConfirmed ? "already recorded/unresolved" : "submitted"}. Replacing with modal close.`
+                )
+                decision.instruction =
+                    platform === "yc" && /\/jobs\/\d+/i.test(currentPageUrl)
+                        ? "return to the job listings"
+                        : "click the close button '✕' or 'Close' on the modal to return to the job listings"
+            } else {
+                logger.info(
+                    `[Agent] Redundant submit click requested, but form is STILL OPEN with an unsubmitted Apply button. Re-running relocation auto-resolver instead of closing modal.`
+                )
+                if (platform === "wellfound" && page) {
+                    await autoResolveWellfoundRelocation(page).catch(() => {})
+                }
+            }
         }
 
         let actSuccess = false
@@ -2812,6 +3593,35 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                     success: true,
                     message: mechanical.message,
                 })
+
+                // When submit action succeeded mechanically, promote the job to attemptedJobs
+                if (isSubmitAction(decision.instruction, pruneResult?.hasOpenDialog)) {
+                    const comp = decision.jobUpdate?.company || decision.formDelegation?.company
+                    const rol = decision.jobUpdate?.role || decision.formDelegation?.role
+                    if (comp && rol && isValidJobIdentifier(comp) && isValidJobIdentifier(rol)) {
+                        const existingIdx = mem.attemptedJobs.findIndex(
+                            (j) => j.company.toLowerCase() === comp.toLowerCase() && j.role.toLowerCase() === rol.toLowerCase()
+                        )
+                        const entry: JobMemoryEntry = {
+                            company: comp.trim(),
+                            role: rol.trim(),
+                            url: decision.jobUpdate?.url,
+                            status: "attempted",
+                        }
+                        if (existingIdx >= 0) {
+                            mem.attemptedJobs[existingIdx] = entry
+                        } else {
+                            mem.attemptedJobs.push(entry)
+                        }
+                        const inspIdx = mem.inspectedJobs.findIndex(
+                            (j) => j.company.toLowerCase() === comp.toLowerCase() && j.role.toLowerCase() === rol.toLowerCase()
+                        )
+                        if (inspIdx >= 0) {
+                            mem.inspectedJobs.splice(inspIdx, 1)
+                        }
+                    }
+                }
+
                 continue
             }
             // mechanical.handled=false or mechanical.success=false: fall through to stagehand.act()

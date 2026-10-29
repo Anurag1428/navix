@@ -139,7 +139,9 @@ export const runWorkflowTask = task({
             // ── Model routing (shared by both local and cloud paths) ──────────
             const groqApiKey = process.env.GROQ_API_KEY
             const geminiApiKey =
-                process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+                process.env.GEMINI_API_KEY ||
+                process.env.GOOGLE_API_KEY ||
+                process.env.GEMINI_API_KEY_BACKUP
 
             let modelName: string
             let modelApiKey: string | undefined
@@ -152,12 +154,12 @@ export const runWorkflowTask = task({
             } else if (requestedModel?.startsWith("groq/") && groqApiKey) {
                 modelName = requestedModel
                 modelApiKey = groqApiKey
-            } else if (groqApiKey) {
-                modelName = "groq/openai/gpt-oss-120b"
-                modelApiKey = groqApiKey
             } else if (geminiApiKey) {
                 modelName = "google/gemini-flash-lite-latest"
                 modelApiKey = geminiApiKey
+            } else if (groqApiKey) {
+                modelName = "groq/openai/gpt-oss-120b"
+                modelApiKey = groqApiKey
             } else {
                 throw new Error(
                     "No AI model API key found. Set GROQ_API_KEY or GEMINI_API_KEY in your environment."
@@ -335,6 +337,8 @@ export const runWorkflowTask = task({
                     },
                 })
                 sessionId = `local_${runId}`
+                metadata.set("sessionId", sessionId as any)
+                await metadata.flush().catch(() => {})
                 return stagehand
             }
 
@@ -362,6 +366,8 @@ export const runWorkflowTask = task({
                     })
 
                     sessionId = session.id
+                    metadata.set("sessionId", sessionId as any)
+                    await metadata.flush().catch(() => {})
                     browser = await browserbase.connect({ apiKey, sessionId: session.id })
                 } else {
                     // Fall back to standard launch if no Context is configured
@@ -370,6 +376,8 @@ export const runWorkflowTask = task({
                         userMetadata: { stagehand: "true" },
                     })
                     sessionId = browser.sessionId
+                    metadata.set("sessionId", sessionId as any)
+                    await metadata.flush().catch(() => {})
                 }
             } catch (error) {
                 // Stagehand swallows the underlying API error and throws

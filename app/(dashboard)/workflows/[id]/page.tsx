@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation"
+import { notFound, redirect } from "next/navigation"
 import { auth } from "@clerk/nextjs/server"
 import { auth as triggerAuth } from "@trigger.dev/sdk"
 import { ReactFlowProvider } from "@xyflow/react"
@@ -15,13 +15,27 @@ export default async function WorkflowPage({
 }: {
   params: Promise<{ id: string }>
 }) {
-  const { orgId } = await auth()
+  const authData = await auth()
+  const { orgId, userId } = authData
   const { id } = await params
 
-  if (!orgId) notFound()
+  console.log("===> [WorkflowPage DEBUG]", { orgId, userId, id })
+
+  if (!orgId) {
+    console.log("===> [WorkflowPage DEBUG] Redirecting to /choose-organization because orgId is missing!")
+    redirect("/choose-organization")
+  }
 
   const workflow = await getWorkflow(orgId, id)
-  if (!workflow) notFound()
+  console.log("===> [WorkflowPage DEBUG] workflow query result:", workflow ? { id: workflow.id, name: workflow.name } : null)
+  if (!workflow) {
+    console.log("===> [WorkflowPage DEBUG] 404 because workflow does not belong to active orgId", { orgId, id })
+    notFound()
+  }
+  if (!workflow) {
+    console.log("===> [WorkflowPage DEBUG] 404 because getWorkflow returned null!")
+    notFound()
+  }
 
   await liveblocks.getOrCreateRoom(id, {
     organizationId: orgId,

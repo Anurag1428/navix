@@ -245,7 +245,13 @@ Education: ${MASTER_CANDIDATE_PROFILE.education.degree}, ${MASTER_CANDIDATE_PROF
 EEO Defaults: Gender: ${MASTER_CANDIDATE_PROFILE.eeo.gender}, Disability: ${MASTER_CANDIDATE_PROFILE.eeo.disability}, Veteran: ${MASTER_CANDIDATE_PROFILE.eeo.veteran}.
 FORM FILLING DIRECTIVE:
 - For simple input fields (Name, Email, Phone, LinkedIn, GitHub, Portfolio, Location, Availability, Salary), type the above exact values directly.
-- For open-ended questions ("Why should we hire you?", "Why this company?", "Note to founders", "Cover letter"), DO NOT write long essays yourself. Instead, use "formDelegation" to invoke the Micro-Brain (Qwen on Groq), which generates tailored proof points in ~200ms.
+- Wellfound Application Form Sequential Order (CRITICAL - DO NOT DEVIATE):
+  1. If relocation prompt appears: First, click the location dropdown ('-') and select the target city option (e.g. "Kochi").
+  2. Next, click the "I can relocate to..." radio button.
+  3. Next, fill the "What interests you about working for this company?" or note field using "formDelegation".
+  4. Finally, click the submit 'Apply' button (which is enabled ONLY after steps 1, 2, and 3 are done).
+- Relocation & Location Selector: Candidate is 100% open to relocation worldwide/onsite. If the relocation radio is ALREADY selected/checked, DO NOT click it again!
+- For open-ended questions ("Why should we hire you?", "Why this company?", "Note to founders", "Cover letter", "What interests you"): CRITICAL: NEVER output "click the textbox" or "click the textarea"! Clicking a textbox leaves it blank and blocks submission! Always use "formDelegation" to invoke the Micro-Brain, which automatically types tailored proof points.
 `.trim()
 
 /**
