@@ -89,7 +89,15 @@ export function isLiveStatus(status?: string): boolean {
 
 export function extractSessionId(run?: {
     output?: unknown
+    metadata?: Record<string, unknown>
 }): string | undefined {
+    if (run?.metadata && typeof run.metadata === "object") {
+        const metaSessionId = (run.metadata as any)?.sessionId
+        if (typeof metaSessionId === "string" && metaSessionId.length > 0) {
+            return metaSessionId
+        }
+    }
+
     if (!run?.output) return undefined
 
     if (typeof run.output === "object" && run.output !== null) {

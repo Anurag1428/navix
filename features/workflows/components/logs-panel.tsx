@@ -68,7 +68,7 @@ export function LogsPanel({
 
         // A Replay row is shown when the run has finished and has a sessionId.
         const isFinished = !run.isLive
-        const hasReplay = isFinished && !!run.sessionId
+        const hasReplay = Boolean(run.sessionId)
         const isReplaySelected = activeReplayRunId === run.id
 
         return (
