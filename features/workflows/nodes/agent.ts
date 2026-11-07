@@ -1493,7 +1493,7 @@ export function formatCompactWorkingMemory(
         for (const j of mem.attemptedJobs) {
             if (!isValidJobIdentifier(j.company) || !isValidJobIdentifier(j.role)) continue
             visitedList.push(
-                `  • [ATTEMPTED] ${j.company} - ${j.role}${j.url ? ` (${j.url})` : ""} | Status: unresolved/pending confirmation`
+                `  • [ATTEMPTED] ${j.company} - ${j.role}${j.url ? ` (${j.url})` : ""} | Status: submission executed (DO NOT REVISIT)`
             )
         }
     }
@@ -2045,6 +2045,9 @@ export async function prunePageDom(
                     '[data-test*="job-listing" i]',
                     '[class*="styles_jobListing" i]',
                     '[class*="jobListing" i]',
+                    '[class*="styles_listing" i]',
+                    '[class*="styles_component" i]',
+                    'div[data-test*="StartupResult"] [class*="styles_listing" i]',
                     '[role="listitem"]',
                     "article",
                     '[data-test*="job" i]',
@@ -2519,12 +2522,10 @@ export async function agentNode({
    - DIRECT / SPECIFIC JOB SHORTCUT: If the user task names a specific company or role (e.g. "UprootSecurity"), or if a job drawer / application modal is already open on page load:
      • DO NOT open the "Filters" modal! Skip filtering completely!
      • If the target job drawer is already open on screen, proceed immediately to Phase B/Phase C (click "Apply" / fill form)!
-   - When the user task requests general search filters (e.g. "most recent", experience level, specific roles):
-     Step 1: Open the filter modal/menu (e.g. click "Filters").
-     Step 2: Locate the Sorting control (e.g. "Sort by", "Recent", "Newest") and select "Most recent" (or equivalent newest-first option).
-     Step 3: Locate the Experience filter (e.g. "Experience", "Years of experience", "Entry Level", "Intern", "0-1 years") and select the matching fresher/entry-level option.
-     Step 4: VERIFY the selected values inside the filter modal BEFORE clicking "View results" or "Apply filters".
-     Step 5: Only after verifying the selections, click "View results" to close the filter dialog.
+   - When the user task requests sorting (e.g. "Most Recent" / "Recent"):
+     • STANDALONE SORT DROPDOWN: Look directly below the search bar for the "Sort by" dropdown (which defaults to "Recommended").
+     • DO NOT open the "Filters" modal for sorting! Click the "Recommended" (or "Sort by") dropdown button and select "Most recent" FIRST.
+     • Once "Most recent" is selected, sorting is complete. NEVER re-click sort controls!
    - Fallback if controls are unavailable: If a specific UI filter does NOT exist on the site, inspect the actual job cards: evaluate visible publication dates (e.g. "Posted 2h ago", "1d ago") and requirement tags directly. NEVER report a filter as applied unless it was actually selected.
    - FILTER COMPLETION RULE: Once the filter modal has been closed via "View results", the filter setup phase is COMPLETE. NEVER re-open the "Filters" modal! Proceed directly to inspecting and applying to the job listings on the page.
    - If you have already attempted to apply the experience-level filter once and it either isn't available in the filter panel, or job cards still show mismatched experience requirements after applying it, STOP retrying the filter. Switch immediately to the fallback: inspect each job card's visible text/tags directly instead.
@@ -2535,14 +2536,15 @@ export async function agentNode({
    - STATUS LIFECYCLE:
      • "inspected": Used when clicking a job card, 'Learn more', reading requirements, or filling form textboxes. Merely viewing or typing in fields is "inspected" until the submit button is actually clicked.
      • "skipped": Used when a job is disqualified (e.g. requires 3+ years experience when seeking fresher/intern roles).
-     • "attempted": Used ONLY in the single step where you click the final submit button ('Apply', 'Send application', 'Submit application').
-     • "confirmed": Used ONLY when reliable, job-specific on-page evidence is directly observed (e.g. button changed to "Applied", or an authoritative confirmation banner like "Application submitted"). You MUST quote the exact on-page confirmation text in "evidence".
+     • "attempted": Used ONLY in the single step where you click the final submit button ('Apply', 'Send application', 'Submit application'). Once attempted, this job is permanently resolved and must NEVER be re-opened or re-clicked!
+     • "confirmed": Used when reliable, job-specific on-page evidence is directly observed (e.g. button changed to "Applied", an authoritative confirmation banner like "Application submitted" or "Congrats! Your application has been submitted", OR on Wellfound a post-apply countdown timer/status like "Your application will be sent in 5:00 minutes" or an "Undo" button). You MUST quote the exact on-page confirmation text in "evidence".
+     • WELLFOUND POST-APPLY TIMER & UNDO RULE: On Wellfound, if a post-apply countdown timer appears (e.g. "Your application will be sent in 5:00 minutes") or an "Undo" option is visible after clicking submit, the application IS SUBMITTED AND COMPLETE. Set status to "confirmed" (evidence: "5-minute countdown / Undo option visible") and close the modal. CRITICAL: NEVER click the "Undo" button!
    - SUBMISSION BEHAVIOR:
      • Click 'Apply' or submit button at most ONCE per job while outcome is unresolved. A single click submits the form.
      • NEVER click 'Apply' repeatedly on the same job!
      • After submitting an application, wait for the page to update and inspect the resulting state before closing the modal.
    - Phase A (Inspect): Click the job card or "Learn more" to open the details drawer (status: "inspected").
-   - Phase B (Apply): If the listing matches criteria (fresher, intern, entry-level) and an "Apply" or "Quick Apply" button is visible:
+   - Phase B (Apply): If the listing matches user criteria (or if the user instruction asks to apply regardless of experience level) and an "Apply" or "Quick Apply" button is visible:
      -> Do NOT close the drawer.
      -> Click the "Apply" or "Quick Apply" button.
    - Phase C (Wellfound 4-Step Form Completion Order - STRICT SEQUENCE):
@@ -2558,12 +2560,19 @@ export async function agentNode({
              CRITICAL: Only after Steps 1, 2, and 3 are complete, the 'Apply' button becomes enabled. Click the 'Apply' button once to submit!
              NEVER try to click 'Apply' repeatedly before Steps 1-3 are finished!
      -> RELOCATION & LOCATION POLICY:
-     -> RELOCATION & LOCATION POLICY:
-        • Warnings like "This job does not support the locations on your profile" or "requires relocation" are NEVER disqualifiers! The candidate is 100% open to relocation worldwide/onsite.
-        • NEVER skip a job or close the modal on a relocation notice.
+        • Standard Location Prompts ("Update your location preferences" or "This job does not support the locations on your profile"): These are NOT disqualifiers because the candidate can relocate. Follow Steps 1-2 above!
         • If an "I can relocate to [Location]" radio button or checkbox appears and is NOT yet checked, click/select it (instruction: "click the 'I can relocate to...' radio button"). If it is ALREADY checked/selected, DO NOT re-click it!
         • If a location dropdown or combobox appears:
           CRITICAL: DO NOT type into the location box! You MUST click the city option (e.g. instruction: "click the 'Kochi' option in the dropdown" or "select '[City]' from the location dropdown") to register the selection and dismiss the relocation banner.
+        • UN-APPLYABLE LISTINGS (MANDATORY IMMEDIATE SKIP):
+          If an opened job details drawer exhibits ANY of the following hard blocks, it is IMPOSSIBLE to apply:
+          1. Listing Taken Down: A banner states "The job listing was recently taken down and is no longer available for applications" (like Observer), or no Apply button exists (only "Share" / "Save").
+             -> Immediately set jobUpdate: { company, role, status: "skipped", reason: "Listing taken down / closed" }
+             -> Instruction: "click the close button '✕' or 'Close' on the modal to return to the job listings"
+          2. Hard Location / Timezone Lock (Relocation Not Allowed): A banner states "is not accepting applications from your current location due to timezone or relocation constraints" (like Agent42 Labs), OR job metadata states "Relocation: Not Allowed", AND there is no "I can relocate to..." radio button.
+             -> The employer explicitly blocks applications from your region and does NOT allow relocation.
+             -> Immediately set jobUpdate: { company, role, status: "skipped", reason: "Employer not accepting applications from candidate location (relocation not allowed)" }
+             -> Instruction: "click the close button '✕' or 'Close' on the modal to return to the job listings"
      -> If an application question box appears (e.g. "What interests you about working for this company?", "Why should we hire you??", "Cover note"):
         CRITICAL: NEVER output "click the textbox" or "click the textarea"! Clicking a textbox leaves it blank and prevents application submission!
         Instead, set "formDelegation" in your decision with:
@@ -2573,18 +2582,30 @@ export async function agentNode({
         - question: the question being asked
         - nextActionAfterTyping: "click the 'Send application' button"
         The Micro-Brain (Qwen) will instantly compose a tailored response and type it in.
-     -> When application submission is confirmed on page (e.g. "Application submitted" or button reads "Applied"), set jobUpdate status to "confirmed" with evidence text.
+     -> When application submission is confirmed on page (e.g. "Application submitted", button reads "Applied", or a 5-minute countdown / "Undo" banner is displayed), set jobUpdate status to "confirmed" with evidence text. CRITICAL: NEVER click "Undo"!
 
-5. BACKTRACKING (Real Disqualifiers or After Submitting Only):
+5. BACKTRACKING & LOOP PREVENTION (Real Disqualifiers, Un-applyable Jobs, or After Submitting Only):
    - ONLY backtrack (click close button '✕', 'Back', or 'Close') if:
-     a. The job description has fully loaded AND explicitly disqualifies the candidate (e.g. requires 3+, 5+, or 7+ years of experience when the user asked for fresher/entry-level). Location mismatch or relocation prompts on Wellfound are NEVER disqualifiers — candidate is open to relocation! OR
-     b. You have already submitted the application, inspected the result, and need to return to the search list for the next job.
-   - MANDATORY ACTION WHEN SKIPPING: If disqualifying a job, you MUST set action="act", set jobUpdate.status="skipped", AND set instruction="click the close button '✕' or 'Close' on the modal to return to the job listings". NEVER leave instruction empty when skipping!
-    - Return to the results list and proceed to the NEXT unchecked job listing.
-    - Check the Visited Job Listings table in memory to avoid re-opening items you already inspected.
-    - MULTI-ROLE POLICY: Multiple distinct roles at the same company may be open (e.g. Frontend vs Backend). If you applied to or inspected one role at a company, other DIFFERENT roles at that company remain eligible and should be inspected and applied to. Only skip or ignore a listing if that specific role was already processed or disqualified.
-    - SCROLLING: If all visible job cards on the screen have already been inspected or skipped, SCROLL DOWN the page (instruction: "scroll down the page to reveal more job listings") to bring new job cards into view. NEVER re-click an already-visited card!
-    - SCROLL BUDGET: You have a strict limit of at most 4 consecutive scrolls. If you reach 4 consecutive scrolls without inspecting/applying to a new matching job, STOP and declare exhaustion (action="done").
+     a. The job description has fully loaded AND explicitly disqualifies the candidate according to the user's task instructions (e.g. requires 3+, 5+, or 7+ years of experience ONLY IF the user asked for fresher/entry-level. If the user asked to apply regardless of experience, DO NOT disqualify for years of experience!). Standard relocation prompts on Wellfound are NEVER disqualifiers — follow Steps 1-2 to select relocation! OR
+     b. The listing is UN-APPLYABLE (listing taken down/closed, or employer location lock where Relocation is Not Allowed and Apply button is disabled). OR
+     c. You have already submitted the application, inspected the result, and need to return to the search list for the next job.
+   - MANDATORY ACTION WHEN SKIPPING: If disqualifying or skipping a job, you MUST set action="act", set jobUpdate.status="skipped", AND set instruction="click the close button '✕' or 'Close' on the modal to return to the job listings". NEVER leave instruction empty when skipping!
+   - Return to the results list and proceed to the NEXT unchecked job listing.
+   - STRICT VISITED-CARD BLOCKLIST (CHECK BOTH COMPANY NAME AND ROLE TITLE):
+     • Before clicking "Learn more" on ANY card, check the Visited Job Listings table in memory against BOTH the Company Name AND the Role Title!
+     • For example, if "[ATTEMPTED] Springboard - Product Engineer (Full Stack, IC) - India" is in Visited Job Listings, NEVER click "Learn more" on the "Product Engineer (Full Stack, IC) - India" card!
+     • NEVER re-open, re-inspect, or re-click ANY job card already listed in memory — whether marked [CONFIRMED], [SKIPPED], [ATTEMPTED], or [INSPECTED]!
+     • Once a card has been opened and closed (whether submitted or skipped), that card is permanently resolved. Do not re-open it to check status!
+     • If an [ATTEMPTED], [SKIPPED], or [INSPECTED] card remains visible on the page, DO NOT click it again!
+   - CRITICAL RULES AFTER CLOSING A MODAL (NEVER RE-CLICK):
+     • When you close a modal, the card you just processed is still at the top of the viewport.
+     • NEVER click 'Learn more' or click into the card of the job you just closed or any job already in Visited Job Listings!
+     • Look for the NEXT UNVISITED job card further down the list.
+     • If no other unvisited job card is currently visible on your screen, your NEXT instruction MUST BE:
+       instruction: "scroll down the page to reveal more job listings"
+   - MULTI-ROLE POLICY: Multiple distinct roles at the same company may be open (e.g. Frontend vs Backend). If you applied to or inspected one role at a company, other DIFFERENT roles at that company remain eligible and should be inspected and applied to. Only skip or ignore a listing if that specific role was already processed or disqualified.
+   - SCROLLING: If all visible job cards on the screen have already been inspected or skipped (or are already marked [CONFIRMED]/[ATTEMPTED]/[SKIPPED]/[INSPECTED]), SCROLL DOWN the page (instruction: "scroll down the page to reveal more job listings") to bring new job cards into view. NEVER re-click an already-visited card!
+   - SCROLL BUDGET: You have a strict limit of at most 4 consecutive scrolls. If you reach 4 consecutive scrolls without inspecting/applying to a new matching job, STOP and declare exhaustion (action="done").
 
 6. COMPLETION & TARGET COUNT INTEGRITY:
 ${
@@ -2815,6 +2836,12 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                     }
                 }
 
+                // If closing modal on an inspected job without submitting, promote to "skipped"
+                const currentInstructionForStatus = decision.action === "act" ? decision.instruction : undefined
+                if (isCloseAction(currentInstructionForStatus) && effectiveStatus === "inspected") {
+                    effectiveStatus = "skipped"
+                }
+
                 // 2. Ground Truth Confirmation Guard:
                 // Require reliable, job-specific on-page evidence before accepting "confirmed" status.
                 // A successful browser click, closed modal, model claim, or reaching target count is NOT sufficient.
@@ -2823,7 +2850,7 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                     const hasVerifiableProof =
                         rawEvidence.length >= 5 &&
                         !/^completed|^done|^clicked|^applied$/i.test(rawEvidence) &&
-                        /(?:submitted|received|applied|sent|confirmation|success|applied\s+on|thank\s+you|pending)/i.test(
+                        /(?:submitted|received|applied|sent|confirmation|success|applied\s+on|thank\s+you|pending|undo|will\s+be\s+sent|countdown)/i.test(
                             rawEvidence
                         )
 
@@ -2856,7 +2883,10 @@ Look at the current page and decide the SINGLE next browser action needed to mak
                                 bodyText.includes("application sent") ||
                                 bodyText.includes("applied on") ||
                                 bodyText.includes("you've applied") ||
-                                bodyText.includes("successfully applied")
+                                bodyText.includes("successfully applied") ||
+                                bodyText.includes("will be sent in") ||
+                                bodyText.includes("undo") ||
+                                bodyText.includes("application pending")
                             ) {
                                 return true
                             }
@@ -2976,7 +3006,6 @@ Look at the current page and decide the SINGLE next browser action needed to mak
         const currentScrollCount = mem.consecutiveScrolls || 0
         const isScrollLimitReached =
             currentScrollCount >= 4 ||
-            (isPlannedScrollDown && (currentScrollCount + 1) >= 4) ||
             wasLastActionAtBottom
 
         if (isScrollLimitReached) {
@@ -3331,6 +3360,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
             const allProcessed = [
                 ...mem.skippedJobs,
                 ...mem.confirmedJobs,
+                ...mem.attemptedJobs,
                 ...(mem.airtableRecentApplications || []),
             ]
 
@@ -3343,9 +3373,17 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
 
                 // Check if both company and role are mentioned in the instruction
                 const cleanRole = role.replace(/\s*\([^)]*\)/g, "").trim().toLowerCase()
+                const compMatches = comp.length >= 2 && lowerInstruction.includes(comp)
                 const instructionMatchesBoth =
-                    lowerInstruction.includes(comp) &&
+                    compMatches &&
                     (lowerInstruction.includes(role) || (cleanRole.length >= 3 && lowerInstruction.includes(cleanRole)))
+
+                // Match highly distinctive role title (minimum 15 chars, not generic) if company name is omitted
+                const isGenericRole = /^(software|full[\s-]?stack|frontend|front[\s-]?end|backend|back[\s-]?end|web|mobile)[\s-]?(engineer|developer|intern)?$/i.test(cleanRole)
+                const exactRoleMatch =
+                    !isGenericRole &&
+                    ((role.length >= 15 && lowerInstruction.includes(role)) ||
+                    (cleanRole.length >= 15 && lowerInstruction.includes(cleanRole)))
 
                 // Or if decision.jobUpdate targets this exact company and role
                 const updateMatchesBoth =
@@ -3353,7 +3391,7 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                     decision.jobUpdate.company?.toLowerCase().trim() === comp &&
                     decision.jobUpdate.role?.toLowerCase().trim() === role
 
-                return instructionMatchesBoth || updateMatchesBoth
+                return instructionMatchesBoth || exactRoleMatch || updateMatchesBoth
             })
 
             if (matchingProcessedJob) {
@@ -3380,6 +3418,32 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                     )
                     decision.instruction = "scroll down the page to reveal more job listings"
                 }
+            }
+        }
+
+        // History-based Immediate Re-click & Ping-Pong Circuit Breaker:
+        // Detects if the agent closed a modal and immediately re-clicks the same card,
+        // or repeatedly clicks the same card within recent steps (e.g. Springboard loop).
+        if (
+            decision.instruction &&
+            /click.*(?:card|Learn more)/i.test(decision.instruction)
+        ) {
+            const normInst = decision.instruction.trim().toLowerCase()
+            const lastStep = mem.history[mem.history.length - 1]
+            const lastWasClose = lastStep && isCloseAction(lastStep.instruction)
+            const recentCardClicks = mem.history
+                .slice(-6)
+                .filter((h) => /click.*(?:card|Learn more)/i.test(h.instruction))
+                .map((h) => h.instruction.trim().toLowerCase())
+
+            const isDuplicateRecentClick = recentCardClicks.some((prev) => prev === normInst)
+
+            if (lastWasClose || isDuplicateRecentClick) {
+                logger.info(
+                    `[Agent] Loop Circuit Breaker: planner attempted card click immediately after modal close or repeated recent card click. Auto-converting to scroll down to escape loop.`,
+                    { instruction: decision.instruction, step: step + 1 }
+                )
+                decision.instruction = "scroll down the page to reveal more job listings"
             }
         }
 
@@ -3425,11 +3489,8 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                     inspectedJobs: mem.inspectedJobs,
                 }
             }
-        } else if (
-            !isCloseAction(decision.instruction) &&
-            (/click.*(?:card|Learn more|Quick Apply|Apply)/i.test(decision.instruction || "") ||
-             /type\s+/i.test(decision.instruction || ""))
-        ) {
+        } else if (!isCloseAction(decision.instruction)) {
+            // Any non-scroll browser action (sorting, dropdowns, card clicks, typing, filters) resets consecutive scrolls
             mem.consecutiveScrolls = 0
         }
 
@@ -3444,6 +3505,71 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
                 message: "No action instruction provided by planner. Inspecting page to recover.",
             })
             continue
+        }
+
+        // Un-applyable Modal Interceptor (Taken-down listings & Employer Location/Timezone Locks):
+        // If an opened drawer is taken down or permanently blocks applications from candidate location with disabled submit button,
+        // intercept any attempt to type or submit, mark the job as skipped, and close the modal.
+        if (platform === "wellfound" && page && pruneResult?.hasOpenDialog) {
+            const unapplyableCheck = await page.evaluate(() => {
+                const drawer = document.querySelector<HTMLElement>(
+                    '[role="dialog"], [aria-modal="true"], [data-test*="JobListingDrawer"], [class*="styles_drawer" i]'
+                )
+                if (!drawer) return { isBlocked: false, reason: "" }
+                const text = (drawer.textContent || "").toLowerCase()
+
+                if (text.includes("recently taken down") || text.includes("no longer available for applications")) {
+                    return { isBlocked: true, reason: "Job listing taken down / no longer available" }
+                }
+
+                const hasLocationLock =
+                    text.includes("not accepting applications from your current location") ||
+                    (text.includes("relocation constraints") && text.includes("timezone"))
+
+                const hasRelocationRadio = Array.from(
+                    drawer.querySelectorAll<HTMLElement>('input[type="radio"], input[type="checkbox"], label')
+                ).some((el) => /i can relocate to/i.test(el.textContent || ""))
+
+                const submitBtn = Array.from(drawer.querySelectorAll<HTMLElement>('button, [role="button"]')).find((b) => {
+                    const t = (b.textContent || "").trim().toLowerCase()
+                    return t === "apply" || t === "send application" || t === "submit application"
+                })
+
+                if (hasLocationLock && !hasRelocationRadio) {
+                    const isDisabled =
+                        !submitBtn ||
+                        (submitBtn as HTMLButtonElement).disabled ||
+                        submitBtn.getAttribute("aria-disabled") === "true" ||
+                        window.getComputedStyle(submitBtn).pointerEvents === "none" ||
+                        parseFloat(window.getComputedStyle(submitBtn).opacity || "1") < 0.8
+                    if (isDisabled) {
+                        return { isBlocked: true, reason: "Employer not accepting applications from candidate location (Apply button disabled and no relocation option)" }
+                    }
+                }
+
+                if (!submitBtn && (text.includes("taken down") || text.includes("not available"))) {
+                    return { isBlocked: true, reason: "No application button available (listing closed)" }
+                }
+
+                return { isBlocked: false, reason: "" }
+            }).catch(() => ({ isBlocked: false, reason: "" }))
+
+            if (unapplyableCheck.isBlocked && !isCloseAction(decision.instruction)) {
+                logger.info(
+                    `[Agent] Detected un-applyable job listing in open drawer: "${unapplyableCheck.reason}". Intercepting action to close modal and mark job as skipped.`
+                )
+                const currentComp = decision.jobUpdate?.company || decision.formDelegation?.company || "Company"
+                const currentRole = decision.jobUpdate?.role || decision.formDelegation?.role || "Role"
+
+                decision.instruction = "click the close button '✕' or 'Close' on the modal to return to the job listings"
+                decision.jobUpdate = {
+                    company: currentComp,
+                    role: currentRole,
+                    status: "skipped",
+                    reason: unapplyableCheck.reason,
+                }
+                delete decision.formDelegation
+            }
         }
 
         // Duplicate submit click interceptor:
@@ -3531,7 +3657,8 @@ Did the agent genuinely achieve the user's intended goal? Provide concrete proof
         ) {
             mem.sortApplied = true
             mem.sortAppliedAtStep = step + 1
-            logger.info(`[Agent] Recorded sortApplied: true at step ${step + 1}`)
+            mem.consecutiveScrolls = 0
+            logger.info(`[Agent] Recorded sortApplied: true at step ${step + 1} (reset consecutiveScrolls to 0)`)
         }
 
         if (isCurrentActionSubmit && (wasLastStepSubmit || isCurrentJobAlreadyAttemptedOrConfirmed)) {
