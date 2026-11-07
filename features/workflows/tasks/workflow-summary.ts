@@ -96,6 +96,20 @@ export function buildWorkflowSummary(params: {
         errorSection = `\n--- FAILURE DETAILS ---\nError: ${errMsg}\n`
     }
 
+    // Resolve Airtable sync status (prefer explicit Airtable workflow step outcome over fallback hook)
+    let airtableSyncSummary = `${params.airtableSyncResult?.synced ? "Yes" : "No"} (${params.airtableSyncResult?.statusAssigned || "No new records created"})`
+    const explicitAirtableStep = params.steps.find((s) => s.nodeType === "airtable")
+    if (explicitAirtableStep) {
+        const airtableOutput = Object.entries(params.outputs).find(
+            ([k, v]) => k === explicitAirtableStep.id || (v && typeof v === "object" && (v as any).operation && (v as any).summary)
+        )?.[1] as any
+        if (explicitAirtableStep.status === "done" && (airtableOutput?.success ?? true)) {
+            const detail = airtableOutput?.summary || airtableOutput?.status || "Synchronized via workflow Airtable node"
+            airtableSyncSummary = `Yes (${detail})`
+        } else if (explicitAirtableStep.status === "failed") {
+            airtableSyncSummary = `Failed (${airtableOutput?.error || "Airtable node execution failed"})`
+        }
+    }
     const banner = [
         "================================================================================",
         "                         NAVIX WORKFLOW EXECUTION SUMMARY                       ",
@@ -118,7 +132,7 @@ export function buildWorkflowSummary(params: {
         errorSection.trimEnd(),
         "",
         "--- AIRTABLE SYNCHRONIZATION ---",
-        `Synced:          ${params.airtableSyncResult?.synced ? "Yes" : "No"} (${params.airtableSyncResult?.statusAssigned || "No new records created"})`,
+        `Synced:          ${airtableSyncSummary}`,
         "================================================================================",
     ]
         .filter((line) => line !== undefined && line !== null)

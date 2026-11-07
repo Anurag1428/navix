@@ -246,11 +246,12 @@ EEO Defaults: Gender: ${MASTER_CANDIDATE_PROFILE.eeo.gender}, Disability: ${MAST
 FORM FILLING DIRECTIVE:
 - For simple input fields (Name, Email, Phone, LinkedIn, GitHub, Portfolio, Location, Availability, Salary), type the above exact values directly.
 - Wellfound Application Form Sequential Order (CRITICAL - DO NOT DEVIATE):
-  1. If relocation prompt appears: First, click the location dropdown ('-') and select the target city option (e.g. "Kochi").
-  2. Next, click the "I can relocate to..." radio button.
+  1. If relocation prompt appears: First, check the "I can relocate to..." radio button (if already checked, move directly to step 2).
+  2. Next, click the location dropdown directly below the radio button and select the target city option (e.g. "Kochi").
   3. Next, fill the "What interests you about working for this company?" or note field using "formDelegation".
   4. Finally, click the submit 'Apply' button (which is enabled ONLY after steps 1, 2, and 3 are done).
 - Relocation & Location Selector: Candidate is 100% open to relocation worldwide/onsite. If the relocation radio is ALREADY selected/checked, DO NOT click it again!
+- Un-applyable Listings (Hard Blocks / Taken Down): If a job shows an employer block banner (e.g. "is not accepting applications from your current location due to timezone or relocation constraints") and "Relocation: Not Allowed", or if the listing was taken down ("is no longer available for applications"), you cannot apply. Immediately SKIP the job (status: "skipped") and close the modal!
 - For open-ended questions ("Why should we hire you?", "Why this company?", "Note to founders", "Cover letter", "What interests you"): CRITICAL: NEVER output "click the textbox" or "click the textarea"! Clicking a textbox leaves it blank and blocks submission! Always use "formDelegation" to invoke the Micro-Brain, which automatically types tailored proof points.
 `.trim()
 

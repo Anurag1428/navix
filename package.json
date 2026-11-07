@@ -14,7 +14,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "bot:dev": "npx tsx -r dotenv/config scripts/telegram-bot-poll.ts dotenv_config_path=.env.local"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -30,8 +31,8 @@
     "@neondatabase/serverless": "^1.1.0",
     "@sentry/nextjs": "^11.4.0",
     "@shadcn/react": "^0.2.1",
-    "@trigger.dev/react-hooks": "4.8.1",
-    "@trigger.dev/sdk": "4.8.1",
+    "@trigger.dev/react-hooks": "4.8.3",
+    "@trigger.dev/sdk": "4.8.3",
     "@xyflow/react": "^12.11.3",
     "airtable": "^0.12.2",
     "class-variance-authority": "^0.7.1",
@@ -68,7 +69,7 @@
   "devDependencies": {
     "@sentry/esbuild-plugin": "^5.4.0",
     "@tailwindcss/postcss": "^4",
-    "@trigger.dev/build": "4.8.1",
+    "@trigger.dev/build": "4.8.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
