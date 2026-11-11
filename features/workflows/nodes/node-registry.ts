@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react"
-import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot, Database, Send, MessageCircle } from "lucide-react"
+import { Globe, Mail, MousePointerClick, ScanSearch, Search, ShieldCheck, type LucideIcon, Bot, Database, Send, MessageCircle, Sparkles } from "lucide-react"
 import { Zap } from "lucide-react"
 
 export type StepNodeKind = "trigger" | "action"
@@ -309,6 +309,38 @@ export const nodeRegistry = {
       { path: "success", label: "Success" },
       { path: "messageId", label: "Message ID" },
       { path: "recipient", label: "Recipient" },
+    ],
+  },
+  "enrich-and-stage-leads": {
+    type: "enrich-and-stage-leads",
+    kind: "action",
+    label: "Enrich & Stage Leads",
+    icon: Sparkles,
+    accent: "bg-indigo-600 text-white",
+    fields: [
+      {
+        key: "startups",
+        label: "Startups Array / JSON",
+        placeholder: "e.g. {{ extract_1.result }}",
+        multiline: true,
+        required: true,
+        description: "Array of extracted startup objects or JSON string containing companyName, websiteUrl, fundingRound, and amount.",
+      },
+      {
+        key: "candidateProfile",
+        label: "Candidate Profile Override (Optional)",
+        placeholder: "Leave blank to use default configuration",
+        multiline: true,
+        required: false,
+        description: "Custom candidate background or skills to inject into pitch synthesis.",
+      },
+    ],
+    outputs: [
+      { path: "total", label: "Total Startups" },
+      { path: "staged", label: "Staged to Airtable" },
+      { path: "skipped", label: "Skipped Duplicates" },
+      { path: "failed", label: "Failed" },
+      { path: "summary", label: "Summary" },
     ],
   },
 } satisfies Record<string, NodeDefinition>

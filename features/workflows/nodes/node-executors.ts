@@ -16,6 +16,7 @@ import { verifyNode } from "@/features/workflows/nodes/verify"
 import { airtableNode } from "@/features/workflows/nodes/airtable"
 import { telegramNode } from "@/features/workflows/nodes/telegram"
 import { whatsappNode } from "@/features/workflows/nodes/whatsapp"
+import { enrichAndStageLeadsNode } from "@/features/workflows/nodes/enrich-and-stage-leads"
 
 export type NodeContext = {
     nodeId?: string
@@ -67,4 +68,6 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         telegramNode({ values, nodeId, steps, outputs }),
     whatsapp: async ({ values, nodeId, steps, outputs }) =>
         whatsappNode({ values, nodeId, steps, outputs }),
+    "enrich-and-stage-leads": async ({ values, nodeId }) =>
+        enrichAndStageLeadsNode({ values, nodeId }),
 } satisfies Record<ActionNodeType, NodeExecutor>
