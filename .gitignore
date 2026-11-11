@@ -49,3 +49,7 @@ next-env.d.ts
 .profiles/
 .local-recordings/
 .scratch*/
+
+# Antigravity local plugins
+.agents/plugins/
+
