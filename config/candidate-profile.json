@@ -1,0 +1,22 @@
+{
+  "name": "Anurag",
+  "title": "Full-Stack & Systems Engineer (AI Agents & Automations)",
+  "coreSkills": [
+    "TypeScript",
+    "React 19",
+    "Next.js",
+    "Playwright",
+    "Browser Automation",
+    "Trigger.dev",
+    "Node.js",
+    "Python"
+  ],
+  "proofPoints": [
+    "Built Navix autonomous agent pairing Gemini Flash macro-planner with accessibility DOM pruning, saving ~17,000 tokens per action and enabling reliable mechanical action execution.",
+    "Engineered cloud browser sandbox automation with Stagehand, Daytona Linux environments, and zero-compute Trigger.dev waitpoints for CAPTCHA/2FA pauses.",
+    "Designed high-concurrency event-driven workflows with Drizzle ORM, Neon PostgreSQL, and Airtable staging integrations."
+  ],
+  "portfolioUrl": "https://starter-pack-iota.vercel.app/",
+  "githubUrl": "https://github.com/Anurag1428",
+  "linkedinUrl": "https://www.linkedin.com/in/anurag-dev"
+}
