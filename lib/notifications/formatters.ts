@@ -49,6 +49,59 @@ function extractJobsFromOutputs(outputs: Record<string, unknown>): ExtractedJobD
     return { confirmedList, attemptedList, skippedList, airtablePreloadedList }
 }
 
+export type ExtractedOutboundLead = {
+    companyName: string
+    companyDomain?: string
+    status: string
+    contactName?: string
+    contactEmail?: string
+    pitchSubject?: string
+}
+
+export type ExtractedOutboundData = {
+    total: number
+    staged: number
+    skipped: number
+    failed: number
+    summary?: string
+    leads: ExtractedOutboundLead[]
+}
+
+export function extractOutboundLeadsFromOutputs(outputs: Record<string, unknown> = {}): ExtractedOutboundData {
+    let total = 0
+    let staged = 0
+    let skipped = 0
+    let failed = 0
+    let summary: string | undefined
+    const leads: ExtractedOutboundLead[] = []
+
+    for (const out of Object.values(outputs)) {
+        if (!out || typeof out !== "object") continue
+        const anyOut = out as any
+        if (Array.isArray(anyOut.results) && typeof anyOut.staged === "number") {
+            total += anyOut.total || anyOut.results.length
+            staged += anyOut.staged || 0
+            skipped += anyOut.skipped || 0
+            failed += anyOut.failed || 0
+            if (anyOut.summary) summary = anyOut.summary
+            for (const r of anyOut.results) {
+                if (r && r.companyName) {
+                    leads.push({
+                        companyName: r.companyName,
+                        companyDomain: r.companyDomain,
+                        status: r.status,
+                        contactName: r.contactName,
+                        contactEmail: r.contactEmail,
+                        pitchSubject: r.pitchSubject,
+                    })
+                }
+            }
+        }
+    }
+
+    return { total, staged, skipped, failed, summary, leads }
+}
+
 /**
  * Formats workflow execution report for Telegram using clean HTML tags.
  */
@@ -82,6 +135,27 @@ export function formatWorkflowSummaryForTelegram(params: WorkflowNotificationPar
             const dur = step.durationMs ? `${(step.durationMs / 1000).toFixed(1)}s` : "-"
             lines.push(`  ${idx + 1}. ${escapeHtml(step.title)} — ${icon} (${dur})`)
         })
+    }
+
+    // Outbound lead generation outcomes (if applicable)
+    const outbound = extractOutboundLeadsFromOutputs(params.outputs)
+    if (outbound.leads.length > 0 || outbound.staged > 0) {
+        lines.push(``)
+        lines.push(`🎯 <b>Outbound Leads Staged:</b> ${outbound.staged} of ${outbound.total}`)
+        if (outbound.skipped > 0) {
+            lines.push(`  • <i>Duplicates skipped: ${outbound.skipped}</i>`)
+        }
+        for (const l of outbound.leads.slice(0, 8)) {
+            const domainStr = l.companyDomain ? ` (<code>${escapeHtml(l.companyDomain)}</code>)` : ""
+            const contactStr = l.contactName && l.contactName !== "Founder" ? ` — ${escapeHtml(l.contactName)}` : ""
+            lines.push(`  ✨ <b>${escapeHtml(l.companyName)}</b>${domainStr}${contactStr}`)
+            if (l.pitchSubject) {
+                lines.push(`     <i>Subject: ${escapeHtml(l.pitchSubject)}</i>`)
+            }
+        }
+        if (outbound.leads.length > 8) {
+            lines.push(`  <i>... and ${outbound.leads.length - 8} more in Airtable</i>`)
+        }
     }
 
     // Job application outcomes (if applicable)
@@ -129,10 +203,12 @@ export function formatWorkflowSummaryForTelegram(params: WorkflowNotificationPar
     }
 
     // Airtable Sync status
-    if (params.airtableSyncResult) {
+    if (params.airtableSyncResult || outbound.staged > 0) {
         lines.push(``)
-        const airtableIcon = params.airtableSyncResult.synced ? "✅" : "ℹ️"
-        lines.push(`🗄️ <b>Airtable:</b> ${airtableIcon} ${params.airtableSyncResult.synced ? "Synced" : "Not Synced"} (${escapeHtml(params.airtableSyncResult.statusAssigned || "No records")})`)
+        const isSynced = params.airtableSyncResult?.synced || outbound.staged > 0
+        const airtableIcon = isSynced ? "✅" : "ℹ️"
+        const statusText = outbound.staged > 0 ? `${outbound.staged} records staged to Outbound Pitches` : params.airtableSyncResult?.statusAssigned || "No records"
+        lines.push(`🗄️ <b>Airtable:</b> ${airtableIcon} ${isSynced ? "Synced" : "Not Synced"} (${escapeHtml(statusText)})`)
     }
 
     // Error details (if failed)
@@ -182,6 +258,27 @@ export function formatWorkflowSummaryForWhatsApp(params: WorkflowNotificationPar
         })
     }
 
+    // Outbound lead generation outcomes (if applicable)
+    const outbound = extractOutboundLeadsFromOutputs(params.outputs)
+    if (outbound.leads.length > 0 || outbound.staged > 0) {
+        lines.push(``)
+        lines.push(`🎯 <b>Outbound Leads Staged:</b> ${outbound.staged} of ${outbound.total}`)
+        if (outbound.skipped > 0) {
+            lines.push(`  • <i>Duplicates skipped: ${outbound.skipped}</i>`)
+        }
+        for (const l of outbound.leads.slice(0, 8)) {
+            const domainStr = l.companyDomain ? ` (<code>${escapeHtml(l.companyDomain)}</code>)` : ""
+            const contactStr = l.contactName && l.contactName !== "Founder" ? ` — ${escapeHtml(l.contactName)}` : ""
+            lines.push(`  ✨ <b>${escapeHtml(l.companyName)}</b>${domainStr}${contactStr}`)
+            if (l.pitchSubject) {
+                lines.push(`     <i>Subject: ${escapeHtml(l.pitchSubject)}</i>`)
+            }
+        }
+        if (outbound.leads.length > 8) {
+            lines.push(`  <i>... and ${outbound.leads.length - 8} more in Airtable</i>`)
+        }
+    }
+
     // Job application outcomes (if applicable)
     if (confirmedList.length > 0 || attemptedList.length > 0 || skippedList.length > 0) {
         lines.push(``)
@@ -227,10 +324,12 @@ export function formatWorkflowSummaryForWhatsApp(params: WorkflowNotificationPar
     }
 
     // Airtable Sync status
-    if (params.airtableSyncResult) {
+    if (params.airtableSyncResult || outbound.staged > 0) {
         lines.push(``)
-        const airtableIcon = params.airtableSyncResult.synced ? "✅" : "ℹ️"
-        lines.push(`🗄️ *Airtable:* ${airtableIcon} ${params.airtableSyncResult.synced ? "Synced" : "Not Synced"} (${params.airtableSyncResult.statusAssigned || "No records"})`)
+        const isSynced = params.airtableSyncResult?.synced || outbound.staged > 0
+        const airtableIcon = isSynced ? "✅" : "ℹ️"
+        const statusText = outbound.staged > 0 ? `${outbound.staged} records staged to Outbound Pitches` : params.airtableSyncResult?.statusAssigned || "No records"
+        lines.push(`🗄️ *Airtable:* ${airtableIcon} ${isSynced ? "Synced" : "Not Synced"} (${statusText})`)
     }
 
     // Error details (if failed)

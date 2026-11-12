@@ -47,6 +47,18 @@ describe("Enrich and Stage Leads Workflow Node", () => {
       assert.equal(parsed[0].productSummary, "Smart electric scooters and charging grid")
     })
 
+    it("recovers valid domain when url is an internal platform ID or missing a TLD", () => {
+      const raw = [
+        { name: "Greenjoules", url: "11-1254" },
+        { name: "Froncort.AI", url: "11-1282" },
+      ]
+
+      const parsed = parseStartupsInput(raw)
+      assert.equal(parsed.length, 2)
+      assert.equal(parsed[0].companyDomain, "greenjoules.com")
+      assert.equal(parsed[1].companyDomain, "froncort.ai")
+    })
+
     it("parses raw JSON string input", () => {
       const rawStr = JSON.stringify([
         {
@@ -92,15 +104,27 @@ describe("Enrich and Stage Leads Workflow Node", () => {
       assert.equal(parsed[1].companyName, "Ola Electric")
     })
 
-    it("filters out items missing website/domain", () => {
+    it("filters out items missing company name", () => {
       const mixed = [
-        { name: "NoDomainStartup", url: "" },
+        { name: "", url: "" },
         { name: "ValidStartup", url: "valid.com" },
       ]
 
       const parsed = parseStartupsInput(mixed)
       assert.equal(parsed.length, 1)
       assert.equal(parsed[0].companyName, "ValidStartup")
+    })
+
+    it("derives valid domain when websiteUrl is null or missing in article extracts", () => {
+      const articleExtract = [
+        { companyName: "The ePlane Company", websiteUrl: null, fundingRound: "Seed", fundingAmount: "Undisclosed", productSummary: null },
+        { companyName: "Cred", websiteUrl: null, fundingRound: "Series C", fundingAmount: "80,000,000", productSummary: null },
+      ]
+
+      const parsed = parseStartupsInput(articleExtract)
+      assert.equal(parsed.length, 2)
+      assert.equal(parsed[0].companyDomain, "theeplanecompany.com")
+      assert.equal(parsed[1].companyDomain, "cred.com")
     })
 
     it("returns empty array for invalid or empty inputs", () => {
@@ -122,6 +146,22 @@ describe("Enrich and Stage Leads Workflow Node", () => {
       assert.equal(result.skipped, 0)
       assert.equal(result.failed, 0)
       assert.ok(result.summary.includes("No valid startups"))
+    })
+
+    it("falls back to upstream outputs when values.startups is empty or unresolved", async () => {
+      const result = await enrichAndStageLeadsNode({
+        values: { startups: "" },
+        nodeId: "node_test_2",
+        outputs: {
+          "extract_uuid_123": {
+            result: [
+              { companyName: "Sarvam", websiteUrl: "sarvam.ai", fundingRound: "Series A" },
+            ],
+          },
+        },
+      })
+
+      assert.equal(result.total, 1)
     })
   })
 })

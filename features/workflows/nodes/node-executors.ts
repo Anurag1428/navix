@@ -68,6 +68,6 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
         telegramNode({ values, nodeId, steps, outputs }),
     whatsapp: async ({ values, nodeId, steps, outputs }) =>
         whatsappNode({ values, nodeId, steps, outputs }),
-    "enrich-and-stage-leads": async ({ values, nodeId }) =>
-        enrichAndStageLeadsNode({ values, nodeId }),
+    "enrich-and-stage-leads": async ({ values, nodeId, outputs }) =>
+        enrichAndStageLeadsNode({ values, nodeId, outputs }),
 } satisfies Record<ActionNodeType, NodeExecutor>

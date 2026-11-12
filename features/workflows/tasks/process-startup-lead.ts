@@ -9,6 +9,7 @@ import {
   synthesizeOutreachPitch,
   type CandidateProfile,
 } from "@/lib/synthesis"
+import type { EnrichedExecutive } from "@/lib/enrichment/types"
 
 export interface ProcessStartupLeadPayload {
   companyName: string
@@ -37,7 +38,7 @@ export interface ProcessStartupLeadResult {
 /**
  * Core business logic to process a single startup lead:
  * 1. Pre-flight Airtable deduplication (preventing duplicate Apollo credit burn).
- * 2. Apollo B2B executive enrichment (CTO/CEO resolution).
+ * 2. Apollo B2B executive enrichment (CTO/CEO resolution, with graceful fallback).
  * 3. Gemini Flash pitch synthesis (prompt-injection fenced, peer-to-peer tone).
  * 4. Staging into Airtable 'Outbound Pitches' (Status = 'Pending Review' or 'Missing Contact').
  */
@@ -69,11 +70,20 @@ export async function processStartupLead(
     }
 
     // 2. Apollo B2B Executive Resolution
-    let executive = await searchExecutiveByDomain(cleanDomain, {
-      companyName,
-    })
+    let executive: EnrichedExecutive | null = null
+    try {
+      if (process.env.APOLLO_API_KEY?.trim()) {
+        executive = await searchExecutiveByDomain(cleanDomain, {
+          companyName,
+        })
+      } else {
+        logger.warn(`[Outbound] APOLLO_API_KEY is not configured. Falling back to placeholder executive for '${cleanDomain}'.`)
+      }
+    } catch (apolloErr: any) {
+      logger.warn(`[Outbound] Apollo lookup error for '${cleanDomain}': ${apolloErr?.message}. Falling back to placeholder.`)
+    }
 
-    // If Apollo returns null, build fallback placeholder
+    // If Apollo returns null or is not configured, build fallback placeholder
     if (!executive) {
       executive = {
         name: "Founder",

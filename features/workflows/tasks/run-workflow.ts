@@ -198,10 +198,12 @@ export const runWorkflowTask = task({
                         const matched = accounts.find((acc) => {
                             const plat = acc.platform.toLowerCase()
                             return (
-                                targetUrls.includes(plat) ||
+                                (plat !== "custom" && targetUrls.includes(plat)) ||
                                 (plat === "wellfound" && (targetUrls.includes("wellfound") || targetUrls.includes("angel.co"))) ||
                                 ((plat === "workatastartup" || plat === "yc") && (targetUrls.includes("workatastartup") || targetUrls.includes("ycombinator"))) ||
-                                (plat === "linkedin" && targetUrls.includes("linkedin"))
+                                (plat === "linkedin" && targetUrls.includes("linkedin")) ||
+                                (acc.loginUrl && (() => { try { const h = new URL(acc.loginUrl).hostname.toLowerCase().replace(/^www\./, ""); return h ? targetUrls.includes(h) : false; } catch { return false; } })()) ||
+                                (acc.name && (() => { const s = acc.name.toLowerCase().replace(/[^a-z0-9]/g, ""); return s.length >= 3 && targetUrls.includes(s); })())
                             )
                         })
 
@@ -525,6 +527,18 @@ export const runWorkflowTask = task({
                         )
 
                         outputs[node.id] = result
+
+                        // Index by node type slug (e.g. 'extract') and 1-based index (e.g. 'extract_1')
+                        // so template tokens like {{ extract_1.result }} or {{ extract.result }} resolve seamlessly
+                        // regardless of whether the node has a generated UUID or a semantic slug!
+                        const sameTypeNodes = nodes.filter((n) => n.data.type === node.data.type)
+                        const indexOfType = sameTypeNodes.findIndex((n) => n.id === node.id)
+                        if (indexOfType !== -1) {
+                            outputs[`${node.data.type}_${indexOfType + 1}`] = result
+                        }
+                        if (!outputs[node.data.type]) {
+                            outputs[node.data.type] = result
+                        }
                     }
 
                     const completedAt = new Date().toISOString()
