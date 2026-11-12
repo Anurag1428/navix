@@ -10,22 +10,22 @@ const MAX_BATCH_SIZE = 15
 
 // Permissive schema to handle slight extraction variations from Stagehand/Inc42
 const rawStartupSchema = z.object({
-  companyName: z.string().optional(),
-  name: z.string().optional(),
-  startupName: z.string().optional(),
-  websiteUrl: z.string().optional(),
-  url: z.string().optional(),
-  website: z.string().optional(),
-  domain: z.string().optional(),
-  fundingRound: z.string().optional(),
-  round: z.string().optional(),
-  fundingAmount: z.string().optional(),
-  amount: z.string().optional(),
-  leadInvestors: z.string().optional(),
-  investors: z.string().optional(),
-  productSummary: z.string().optional(),
-  description: z.string().optional(),
-  summary: z.string().optional(),
+  companyName: z.string().nullish(),
+  name: z.string().nullish(),
+  startupName: z.string().nullish(),
+  websiteUrl: z.string().nullish(),
+  url: z.string().nullish(),
+  website: z.string().nullish(),
+  domain: z.string().nullish(),
+  fundingRound: z.string().nullish(),
+  round: z.string().nullish(),
+  fundingAmount: z.string().nullish(),
+  amount: z.string().nullish(),
+  leadInvestors: z.string().nullish(),
+  investors: z.string().nullish(),
+  productSummary: z.string().nullish(),
+  description: z.string().nullish(),
+  summary: z.string().nullish(),
 })
 
 export interface ParsedStartupItem {
@@ -40,6 +40,26 @@ export interface ParsedStartupItem {
 /**
  * Parses raw JSON text or objects into a normalized array of startup items.
  */
+export function resolveCleanDomain(rawDomain: string | null | undefined, companyName: string): string {
+  const trimmed = (rawDomain || "").trim()
+  let clean = trimmed.toLowerCase()
+  clean = clean.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "")
+  clean = clean.split("/")[0].split("?")[0].split("#")[0]
+
+  // If the extracted domain is an internal platform ID or lacks a valid TLD dot
+  if (!clean || !clean.includes(".") || clean.includes("inc42.com")) {
+    const match = companyName.match(/([a-z0-9-]+)\.([a-z]{2,})/i)
+    if (match) {
+      return match[0].toLowerCase()
+    }
+    const slug = companyName.toLowerCase().replace(/[^a-z0-9]/g, "")
+    if (slug) {
+      return `${slug}.com`
+    }
+  }
+  return trimmed
+}
+
 export function parseStartupsInput(raw: unknown): ParsedStartupItem[] {
   if (!raw) return []
 
@@ -76,13 +96,15 @@ export function parseStartupsInput(raw: unknown): ParsedStartupItem[] {
     if (!parsed.success) continue
 
     const val = parsed.data
-    const companyName = val.companyName || val.name || val.startupName || "Startup"
+    const companyName = (val.companyName || val.name || val.startupName || "").trim()
+    if (!companyName || companyName.toLowerCase() === "startup") continue
     const companyDomain = val.websiteUrl || val.url || val.website || val.domain || ""
 
-    if (companyDomain.trim()) {
+    const cleanDomain = resolveCleanDomain(companyDomain, companyName)
+    if (cleanDomain) {
       items.push({
-        companyName: companyName.trim(),
-        companyDomain: companyDomain.trim(),
+        companyName,
+        companyDomain: cleanDomain,
         fundingRound: val.fundingRound || val.round,
         fundingAmount: val.fundingAmount || val.amount,
         leadInvestors: val.leadInvestors || val.investors,
@@ -139,18 +161,34 @@ export async function enrichAndStageLeadsNode(
   options: {
     values: Record<string, string>
     nodeId?: string
+    outputs?: Record<string, unknown>
   }
 ) {
   const rawInput = options.values.startups || options.values.instruction
-  const allParsed = parseStartupsInput(rawInput)
+  let allParsed = parseStartupsInput(rawInput)
+
+  // Fallback: If not found in explicit input, inspect upstream outputs
+  if (allParsed.length === 0 && options.outputs) {
+    for (const [key, out] of Object.entries(options.outputs)) {
+      if (!out || typeof out !== "object") continue
+      const anyOut = out as any
+      const candidate = anyOut.result || anyOut.startups || anyOut.items || anyOut
+      const candidateParsed = parseStartupsInput(candidate)
+      if (candidateParsed.length > 0) {
+        allParsed = candidateParsed
+        break
+      }
+    }
+  }
 
   if (allParsed.length === 0) {
+    console.warn("[enrich-and-stage-leads] No valid startups found in input or upstream outputs. Input was:", rawInput)
     return {
       total: 0,
       staged: 0,
       skipped: 0,
       failed: 0,
-      summary: "No valid startups found in input.",
+      summary: "No valid startups found in input or upstream outputs.",
       results: [],
     }
   }

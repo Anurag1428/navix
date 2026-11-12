@@ -1,0 +1,75 @@
+{
+  "name": "Funded Startup Lead Generation & Outreach Engine",
+  "description": "Scrapes newly funded tech startups from Inc42, resolves verified CTO/CEO contacts via Apollo, synthesizes peer-to-peer engineering pitches with Gemini Flash, and stages records into Airtable for 1-click human review.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "start_1",
+        "type": "step",
+        "position": { "x": 100, "y": 200 },
+        "data": {
+          "type": "start",
+          "kind": "trigger",
+          "title": "Start Trigger",
+          "values": {}
+        }
+      },
+      {
+        "id": "open-url_1",
+        "type": "step",
+        "position": { "x": 350, "y": 200 },
+        "data": {
+          "type": "open-url",
+          "kind": "action",
+          "title": "Open Inc42 Funding Tracker",
+          "values": {
+            "url": "https://inc42.com/buzz/indian-startup-funding-tracker/"
+          }
+        }
+      },
+      {
+        "id": "extract_1",
+        "type": "step",
+        "position": { "x": 650, "y": 200 },
+        "data": {
+          "type": "extract",
+          "kind": "action",
+          "title": "Extract Funded Startups",
+          "values": {
+            "instruction": "Extract the funded startups mentioned on this page as a JSON array of objects. For each startup, extract:\n- companyName (string): name of the startup\n- websiteUrl (string): clean website URL or domain (e.g. 'zepto.co.in' or 'https://zepto.co.in')\n- fundingRound (string): round type (e.g. 'Seed', 'Pre-Series A', 'Series A', 'Series B', 'Growth')\n- fundingAmount (string): amount raised (e.g. '$665M' or 'INR 50 Cr')\n- leadInvestors (string): key lead venture investors\n- productSummary (string): 1-2 sentence description of what product or technology they build."
+          }
+        }
+      },
+      {
+        "id": "enrich-and-stage-leads_1",
+        "type": "step",
+        "position": { "x": 950, "y": 200 },
+        "data": {
+          "type": "enrich-and-stage-leads",
+          "kind": "action",
+          "title": "Enrich & Stage Outbound Leads",
+          "values": {
+            "startups": "{{ extract_1.result }}"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_start_to_open",
+        "source": "start_1",
+        "target": "open-url_1"
+      },
+      {
+        "id": "edge_open_to_extract",
+        "source": "open-url_1",
+        "target": "extract_1"
+      },
+      {
+        "id": "edge_extract_to_enrich",
+        "source": "extract_1",
+        "target": "enrich-and-stage-leads_1"
+      }
+    ]
+  }
+}

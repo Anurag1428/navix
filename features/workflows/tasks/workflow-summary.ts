@@ -90,6 +90,24 @@ export function buildWorkflowSummary(params: {
         jobsSection += `  - ${sample}${airtablePreloadedList.length > 5 ? ` and ${airtablePreloadedList.length - 5} more` : ""}\n`
     }
 
+    // Outbound Leads section
+    let outboundSection = ""
+    let outboundStagedCount = 0
+    for (const out of Object.values(params.outputs)) {
+        if (!out || typeof out !== "object") continue
+        const anyOut = out as any
+        if (Array.isArray(anyOut.results) && typeof anyOut.staged === "number") {
+            outboundStagedCount += anyOut.staged
+            outboundSection += `• Staged Outbound Leads (${anyOut.staged} of ${anyOut.total || anyOut.results.length}):\n`
+            for (const r of (anyOut.results as any[]).slice(0, 10)) {
+                outboundSection += `  - ${r.companyName} (${r.companyDomain || "no-domain"}) | Status: ${r.status}${r.pitchSubject ? ` | Subject: "${r.pitchSubject}"` : ""}\n`
+            }
+            if (anyOut.results.length > 10) {
+                outboundSection += `  ... and ${anyOut.results.length - 10} more in Airtable\n`
+            }
+        }
+    }
+
     let errorSection = ""
     if (params.error) {
         const errMsg = params.error instanceof Error ? params.error.message : String(params.error)
@@ -98,6 +116,9 @@ export function buildWorkflowSummary(params: {
 
     // Resolve Airtable sync status (prefer explicit Airtable workflow step outcome over fallback hook)
     let airtableSyncSummary = `${params.airtableSyncResult?.synced ? "Yes" : "No"} (${params.airtableSyncResult?.statusAssigned || "No new records created"})`
+    if (outboundStagedCount > 0) {
+        airtableSyncSummary = `Yes (${outboundStagedCount} pitches staged to Outbound Pitches)`
+    }
     const explicitAirtableStep = params.steps.find((s) => s.nodeType === "airtable")
     if (explicitAirtableStep) {
         const airtableOutput = Object.entries(params.outputs).find(
@@ -122,7 +143,12 @@ export function buildWorkflowSummary(params: {
         `--- STEPS EXECUTED (${params.steps.length}) ---`,
         stepLines.length > 0 ? stepLines.join("\n") : "  (none)",
         "",
-        "--- JOB APPLICATION OUTCOMES ---",
+        ...(outboundSection ? [
+            "--- OUTBOUND LEAD STAGING OUTCOMES ---",
+            outboundSection.trimEnd(),
+        ] : [
+            "--- JOB APPLICATION OUTCOMES ---",
+            ]),
         jobsSection.trimEnd(),
         "",
         "--- GOAL AUDIT & VERIFICATION ---",

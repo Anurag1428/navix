@@ -121,6 +121,45 @@ describe("Telegram & WhatsApp Workflow Notifications", () => {
             assert.ok(report.includes("FAILED"), "Reports FAILED status on error")
         })
 
+        it("formats Outbound Lead Generation summary with startups and pitches for Telegram", () => {
+            const report = formatWorkflowSummaryForTelegram({
+                workflowName: "Funded Startup Outreach",
+                workflowId: "wf_outbound",
+                runId: "run_outbound_123",
+                durationMs: 45000,
+                steps: [],
+                outputs: {
+                    "enrich_1": {
+                        total: 2,
+                        staged: 2,
+                        skipped: 0,
+                        failed: 0,
+                        results: [
+                            {
+                                companyName: "Greenjoules",
+                                companyDomain: "greenjoules.com",
+                                status: "staged",
+                                pitchSubject: "Quick thought on Greenjoules engineering",
+                            },
+                            {
+                                companyName: "Froncort.AI",
+                                companyDomain: "froncort.ai",
+                                status: "staged",
+                                pitchSubject: "Quick thought on Froncort.AI engineering",
+                            },
+                        ],
+                    },
+                },
+            })
+
+            assert.ok(report.includes("Outbound Leads Staged:</b> 2 of 2"), "Must include outbound leads count")
+            assert.ok(report.includes("Greenjoules"), "Must include startup name")
+            assert.ok(report.includes("greenjoules.com"), "Must include startup domain")
+            assert.ok(report.includes("Quick thought on Greenjoules engineering"), "Must include pitch subject")
+            assert.ok(report.includes("Froncort.AI"), "Must include second startup")
+            assert.ok(report.includes("2 records staged to Outbound Pitches"), "Must report Airtable outbound staging")
+        })
+
         it("formats WhatsApp summary using standard WhatsApp markdown (*bold*, _italic_)", () => {
             const report = formatWorkflowSummaryForWhatsApp({
                 workflowName: "Stripe Automated Applier",
